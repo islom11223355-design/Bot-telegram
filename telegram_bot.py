@@ -493,8 +493,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Faoliyat turini tanlang:", reply_markup=reply_markup)
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Qolgan kod
-    """Inline tugmalar bilan ishlash"""
+
     query = update.callback_query
     user_id = str(query.from_user.id)
     data = query.data

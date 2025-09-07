@@ -3,7 +3,6 @@ import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Location
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from telegram.request import HTTPXRequest
 from flask import Flask, request
 import logging
 import json
@@ -16,6 +15,9 @@ app = Flask(__name__)
 # Logging sozlamalari
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Global Application obyekti
+application = None
 
 # Google Sheets sozlamalari
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -982,30 +984,32 @@ async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(f"Sizning ID: {update.effective_user.id}", **options)
 
 @app.route('/webhook', methods=['POST'])
-async def webhook():
+def webhook():
+    """Webhook endpoint"""
+    global application
     try:
-        update = Update.de_json(request.get_json(force=True), context.bot)
-        await context.application.process_update(update)
+        update = Update.de_json(request.get_json(force=True), application.bot)
+        application.process_update(update)
         return 'OK', 200
     except Exception as e:
-        logger.error(f"Webhook xatosi: {str(e)}", exc_info=True)  # Batafsil stack trace uchun exc_info=True
+        logger.error(f"Webhook xatosi: {str(e)}", exc_info=True)
         return 'Error', 500
 
-async def set_webhook(application: Application):
+def set_webhook():
     """Webhookni o'rnatish"""
+    global application
     try:
-        await application.bot.set_webhook(url=WEBHOOK_URL)
-        logger.info(f"Webhook o'rnatildi: {WEBHOOK_URL}")
+        application.bot.setWebhook(url=URL)
+        logger.info(f"Webhook o'rnatildi: {URL}")
     except Exception as e:
         logger.error(f"Webhook o'rnatish xatosi: {e}")
 
-async def main():
+def main():
     """Botni ishga tushirish"""
+    global application
     init_sheets()
-    # Application obyektini yaratish
-    application = Application.builder().token(BOT_TOKEN).request(HTTPXRequest()).build()
+    application = Application.builder().token(BOT_TOKEN).build()
 
-    # Handler'larni qo'shish
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("id", get_id))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -1013,12 +1017,8 @@ async def main():
     application.add_handler(CallbackQueryHandler(handle_callback_query, pattern="^(group_|product_|confirm_cart)"))
     application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|select_group_)"))
 
-    # Webhookni o'rnatish
-    await set_webhook(application)
-    
-    # Flask serverini ishga tushirish
+    set_webhook()
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
 
 if __name__ == "__main__":
-    import asyncio
-    asyncio.run(main())
+    main()

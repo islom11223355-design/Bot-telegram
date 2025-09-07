@@ -2,7 +2,7 @@ import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Location
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, Filters, ContextTypes
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
 from flask import Flask, request
 import logging
@@ -1009,8 +1009,8 @@ async def main():
     # Handler'larni qo'shish
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("id", get_id))
-    application.add_handler(MessageHandler(Filters.TEXT & ~Filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler(Filters.LOCATION, handle_location))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(filters.LOCATION, handle_location))
     application.add_handler(CallbackQueryHandler(handle_callback_query, pattern="^(group_|product_|confirm_cart)"))
     application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|select_group_)"))
 

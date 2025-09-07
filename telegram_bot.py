@@ -29,7 +29,7 @@ BUYURTMALAR_SHEET = SHEET.open_by_key(SHEET_ID).worksheet("Buyurtmalar")
 
 # Bot sozlamalari
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+_URL = os.getenv("WEBHOOK_URL")
 ADMINS = ["1163346232"]
 
 # Foydalanuvchi holatlari va boshqa sozlamalar
@@ -981,7 +981,6 @@ async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options["message_thread_id"] = update.message.message_thread_id
     await update.message.reply_text(f"Sizning ID: {update.effective_user.id}", **options)
 
-# Webhook yo'li
 @app.route('/webhook', methods=['POST'])
 async def webhook():
     try:
@@ -989,7 +988,7 @@ async def webhook():
         await context.application.process_update(update)
         return 'OK', 200
     except Exception as e:
-        logger.error(f"Webhook xatosi: {e}")
+        logger.error(f"Webhook xatosi: {str(e)}", exc_info=True)  # Batafsil xato loglash uchun exc_info=True qo'shildi
         return 'Error', 500
 
 async def set_webhook(application: Application):

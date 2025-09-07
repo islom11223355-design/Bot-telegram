@@ -16,8 +16,13 @@ app = Flask(__name__)
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global Application obyekti
-application = None
+# Bot sozlamalari
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+URL = os.getenv("WEBHOOK_URL")
+ADMINS = ["1163346232"]
+
+# Application obyekti boshida yaratiladi
+application = Application.builder().token(BOT_TOKEN).build()
 
 # Google Sheets sozlamalari
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -28,11 +33,6 @@ SHEET_ID = os.getenv("SHEET_ID")
 HARIDORLAR_SHEET = SHEET.open_by_key(SHEET_ID).worksheet("Haridorlar")
 MAHSULOTLAR_SHEET = SHEET.open_by_key(SHEET_ID).worksheet("Mahsulotlar")
 BUYURTMALAR_SHEET = SHEET.open_by_key(SHEET_ID).worksheet("Buyurtmalar")
-
-# Bot sozlamalari
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-URL = os.getenv("WEBHOOK_URL")
-ADMINS = ["1163346232"]
 
 # Foydalanuvchi holatlari va boshqa sozlamalar
 USER_STATE = {}
@@ -986,9 +986,15 @@ async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Webhook endpoint"""
-    global application
+    logger.info("Webhook so'rovi keldi")
+    if application is None:
+        logger.error("Application obyekti None, webhook ishlamaydi")
+        return 'Error: Application not initialized', 500
     try:
         update = Update.de_json(request.get_json(force=True), application.bot)
+        if update is None:
+            logger.error("Update obyekti yaratilmadi, JSON noto'g'ri bo'lishi mumkin")
+            return 'Error: Invalid update', 400
         application.process_update(update)
         return 'OK', 200
     except Exception as e:
@@ -997,7 +1003,6 @@ def webhook():
 
 def set_webhook():
     """Webhookni o'rnatish"""
-    global application
     try:
         application.bot.setWebhook(url=URL)
         logger.info(f"Webhook o'rnatildi: {URL}")
@@ -1006,10 +1011,9 @@ def set_webhook():
 
 def main():
     """Botni ishga tushirish"""
-    global application
     init_sheets()
-    application = Application.builder().token(BOT_TOKEN).build()
 
+    # Handler'larni qo'shish
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("id", get_id))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -1017,7 +1021,10 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_callback_query, pattern="^(group_|product_|confirm_cart)"))
     application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|select_group_)"))
 
+    # Webhookni o'rnatish
     set_webhook()
+    
+    # Flask serverini ishga tushirish
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
 
 if __name__ == "__main__":

@@ -1,8 +1,8 @@
 import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Location, Bot
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes, Dispatcher
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Location
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, Filters, ContextTypes
 from telegram.request import HTTPXRequest
 from flask import Flask, request
 import logging
@@ -21,12 +21,11 @@ logger = logging.getLogger(__name__)
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 CREDS_JSON = json.loads(os.getenv("GOOGLE_SHEETS_CREDS"))
 CREDS = ServiceAccountCredentials.from_json_keyfile_dict(CREDS_JSON, SCOPE)
-CLIENT = gspread.authorize(CREDS)
+SHEET = gspread.authorize(CREDS)
 SHEET_ID = os.getenv("SHEET_ID")
-SHEET = CLIENT.open_by_key(SHEET_ID)
-HARIDORLAR_SHEET = SHEET.worksheet("Haridorlar")
-MAHSULOTLAR_SHEET = SHEET.worksheet("Mahsulotlar")
-BUYURTMALAR_SHEET = SHEET.worksheet("Buyurtmalar")
+HARIDORLAR_SHEET = SHEET.open_by_key(SHEET_ID).worksheet("Haridorlar")
+MAHSULOTLAR_SHEET = SHEET.open_by_key(SHEET_ID).worksheet("Mahsulotlar")
+BUYURTMALAR_SHEET = SHEET.open_by_key(SHEET_ID).worksheet("Buyurtmalar")
 
 # Bot sozlamalari
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -38,10 +37,6 @@ USER_STATE = {}
 CART = {}
 BONUS_REQUESTS = {}
 USER_SELECTED_GROUP = {}
-
-# Bot va Dispatcher
-bot = Bot(token=BOT_TOKEN)
-dispatcher = Dispatcher(bot, None, workers=0)
 
 def format_currency(amount):
     """Narxni 40 000 so'm ko'rinishida formatlash"""
@@ -988,37 +983,43 @@ async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # Webhook yo'li
 @app.route('/webhook', methods=['POST'])
-def webhook():
+async def webhook():
     try:
-        update = Update.de_json(request.get_json(force=True), bot)
-        dispatcher.process_update(update)
+        update = Update.de_json(request.get_json(force=True), context.bot)
+        await context.application.process_update(update)
         return 'OK', 200
     except Exception as e:
         logger.error(f"Webhook xatosi: {e}")
         return 'Error', 500
 
-# Webhookni o'rnatish
-def set_webhook():
+async def set_webhook(application: Application):
+    """Webhookni o'rnatish"""
     try:
-        bot.set_webhook(url=WEBHOOK_URL)
+        await application.bot.set_webhook(url=WEBHOOK_URL)
         logger.info(f"Webhook o'rnatildi: {WEBHOOK_URL}")
     except Exception as e:
         logger.error(f"Webhook o'rnatish xatosi: {e}")
 
-def main():
+async def main():
     """Botni ishga tushirish"""
     init_sheets()
+    # Application obyektini yaratish
+    application = Application.builder().token(BOT_TOKEN).request(HTTPXRequest()).build()
+
     # Handler'larni qo'shish
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("id", get_id))
-    dispatcher.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    dispatcher.add_handler(MessageHandler(filters.LOCATION, handle_location))
-    dispatcher.add_handler(CallbackQueryHandler(handle_callback_query, pattern="^(group_|product_|confirm_cart)"))
-    dispatcher.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|select_group_)"))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("id", get_id))
+    application.add_handler(MessageHandler(Filters.TEXT & ~Filters.COMMAND, handle_message))
+    application.add_handler(MessageHandler(Filters.LOCATION, handle_location))
+    application.add_handler(CallbackQueryHandler(handle_callback_query, pattern="^(group_|product_|confirm_cart)"))
+    application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|select_group_)"))
+
+    # Webhookni o'rnatish
+    await set_webhook(application)
     
-    # Webhookni o'rnatish va Flask serverini ishga tushirish
-    set_webhook()
+    # Flask serverini ishga tushirish
     app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
 
 if __name__ == "__main__":
-    main()
+    import asyncio
+    asyncio.run(main())

@@ -1,8 +1,8 @@
 import os
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Location
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters
 from flask import Flask, request
 import logging
 import json
@@ -16,30 +16,53 @@ app = Flask(__name__)
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Atrof-muhit o‘zgaruvchilarini o‘qish
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+if not BOT_TOKEN:
+    logger.error("BOT_TOKEN topilmadi")
+    raise ValueError("BOT_TOKEN atrof-muhit o'zgaruvchisi o'rnatilmagan")
+
+SHEET_ID = os.getenv("SHEET_ID")
+if not SHEET_ID:
+    logger.error("SHEET_ID topilmadi")
+    raise ValueError("SHEET_ID atrof-muhit o'zgaruvchisi o'rnatilmagan")
+
+GOOGLE_SHEETS_CREDS = os.getenv("GOOGLE_SHEETS_CREDS")
+if not GOOGLE_SHEETS_CREDS:
+    logger.error("GOOGLE_SHEETS_CREDS topilmadi")
+    raise ValueError("GOOGLE_SHEETS_CREDS atrof-muhit o'zgaruvchisi o'rnatilmagan")
+
+RENDER_EXTERNAL_HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME')
+WEBHOOK_URL = f"https://{RENDER_EXTERNAL_HOSTNAME}/webhook" if RENDER_EXTERNAL_HOSTNAME else os.getenv("WEBHOOK_URL")
+if not WEBHOOK_URL:
+    logger.error("WEBHOOK_URL topilmadi")
+    raise ValueError("WEBHOOK_URL atrof-muhit o'zgaruvchisi o'rnatilmagan")
+
 # Google Sheets sozlamalari
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-CREDS_JSON = json.loads(os.getenv("GOOGLE_SHEETS_CREDS"))
-CREDS = ServiceAccountCredentials.from_json_keyfile_dict(CREDS_JSON, SCOPE)
-SHEET = gspread.authorize(CREDS)
-SHEET_ID = os.getenv("SHEET_ID")
-HARIDORLAR_SHEET = SHEET.open_by_key(SHEET_ID).worksheet("Haridorlar")
-MAHSULOTLAR_SHEET = SHEET.open_by_key(SHEET_ID).worksheet("Mahsulotlar")
-BUYURTMALAR_SHEET = SHEET.open_by_key(SHEET_ID).worksheet("Buyurtmalar")
+try:
+    CREDS_JSON = json.loads(GOOGLE_SHEETS_CREDS)
+    CREDS = ServiceAccountCredentials.from_json_keyfile_dict(CREDS_JSON, SCOPE)
+    SHEET = gspread.authorize(CREDS)
+    HARIDORLAR_SHEET = SHEET.open_by_key(SHEET_ID).worksheet("Haridorlar")
+    MAHSULOTLAR_SHEET = SHEET.open_by_key(SHEET_ID).worksheet("Mahsulotlar")
+    BUYURTMALAR_SHEET = SHEET.open_by_key(SHEET_ID).worksheet("Buyurtmalar")
+except Exception as e:
+    logger.error(f"Google Sheets sozlash xatosi: {e}")
+    raise
 
-# Bot sozlamalari
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-RENDER_EXTERNAL_HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME')
-URL = f"https://{RENDER_EXTERNAL_HOSTNAME}/webhook" if RENDER_EXTERNAL_HOSTNAME else os.getenv("WEBHOOK_URL")
+# Admin sozlamalari
 ADMINS = ["1163346232"]
 
-# Foydalanuvchi holatlari va boshqa sozlamalar
+# Foydalanuvchi holatlari va boshqa o‘zgaruvchilar
 USER_STATE = {}
 CART = {}
 BONUS_REQUESTS = {}
 USER_SELECTED_GROUP = {}
 
-# Global Application obyekti
-telegram_application = None
+# Telegram Application obyekti
+application = Application.builder().token(BOT_TOKEN).build()
+logger.info("Application muvaffaqiyatli inicializatsiya qilindi")
 
 def format_currency(amount):
     """Narxni 40 000 so'm ko'rinishida formatlash"""
@@ -54,8 +77,10 @@ def init_sheets():
             MAHSULOTLAR_SHEET.append_row(["Guruh nomi", "Mahsulot nomi", "Narx", "Bonus foizi"])
         if not BUYURTMALAR_SHEET.row_values(1):
             BUYURTMALAR_SHEET.append_row(["Haridor ID", "Buyurtmachi ismi", "Telefon", "Manzil", "Sana", "Guruh nomi", "Mahsulotlar", "Umumiy summa", "Bonus summasi"])
+        logger.info("Google Sheets jadvallari muvaffaqiyatli boshlandi")
     except Exception as e:
         logger.error(f"Sheets init xatosi: {e}")
+        raise
 
 def save_user_data(user_id, data):
     """Foydalanuvchi ma'lumotlarini Google Sheets'ga saqlash"""
@@ -71,6 +96,7 @@ def save_user_data(user_id, data):
         logger.info(f"Haridor saqlandi: ID={user_id}, Bonus={data.get('bonus', 0)}")
     except Exception as e:
         logger.error(f"Haridor saqlash xatosi: {e}")
+        raise
 
 def update_user_data(user_id, data):
     """Foydalanuvchi ma'lumotlarini yangilash"""
@@ -125,6 +151,7 @@ def save_product(data):
         logger.info(f"Mahsulot qo'shildi: {data['name']} ({data['group_name']})")
     except Exception as e:
         logger.error(f"Mahsulot saqlash xatosi: {e}")
+        raise
 
 def update_product(old_name, group_name, data):
     """Mahsulot ma'lumotlarini yangilash"""
@@ -259,7 +286,7 @@ def get_user_data_rows():
         logger.error(f"Haridorlar ro'yxatini olish xatosi: {e}")
         return []
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(update: Update, context):
     """Botni boshlash"""
     user_id = str(update.effective_user.id)
     options = {}
@@ -290,7 +317,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             await update.message.reply_text(f"Xush kelibsiz, {user_data['name']}!", reply_markup=reply_markup, **options)
 
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_message(update: Update, context):
     """Foydalanuvchi xabarlarini qayta ishlash"""
     user_id = str(update.effective_user.id)
     text = update.message.text
@@ -457,7 +484,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             else:
                 await update.message.reply_text("Iltimos, quyidagi variantlardan birini tanlang: Do'kon egasi, Qurilish kompaniyasi, Uy egasi, Usta", **options)
 
-async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_location(update: Update, context):
     """Lokatsiya qabul qilish"""
     user_id = str(update.effective_user.id)
     options = {}
@@ -521,7 +548,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             await update.message.reply_text("Faoliyat turini tanlang:", reply_markup=reply_markup, **options)
 
-async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_callback_query(update: Update, context):
     """Guruh tanlash va boshqa callback so'rovlarini qayta ishlash"""
     try:
         query = update.callback_query
@@ -570,7 +597,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.reply_text(f"Xato yuz berdi: {str(e)}", **options)
         await query.answer()
 
-async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_admin_callback(update: Update, context):
     """Admin callback so'rovlarini qayta ishlash"""
     try:
         query = update.callback_query
@@ -766,7 +793,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.reply_text(f"Xato yuz berdi: {str(e)}", **options)
         await query.answer()
 
-async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def handle_admin(update: Update, context):
     """Admin funksiyalari"""
     user_id = str(update.effective_user.id)
     text = update.message.text
@@ -977,70 +1004,53 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Iltimos, menyudan biror amalni tanlang.", **options)
         logger.warning(f"Admin {user_id} noma'lum xabar yubordi: {text}")
 
-async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def get_id(update: Update, context):
     """Foydalanuvchi ID'sini ko'rsatish"""
     options = {}
     if update.message.is_topic_message:
         options["message_thread_id"] = update.message.message_thread_id
     await update.message.reply_text(f"Sizning ID: {update.effective_user.id}", **options)
 
-def get_application():
-    """Application obyektini olish yoki yaratish"""
-    global telegram_application
-    if telegram_application is None:
-        BOT_TOKEN = os.getenv("BOT_TOKEN")
-        if not BOT_TOKEN:
-            logger.error("BOT_TOKEN topilmadi!")
-            return None
-        
-        telegram_application = Application.builder().token(BOT_TOKEN).build()
-        
-        # Handlerni qo'shish
-        telegram_application.add_handler(CommandHandler("start", start))
-        telegram_application.add_handler(CommandHandler("id", get_id))
-        telegram_application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-        telegram_application.add_handler(MessageHandler(filters.LOCATION, handle_location))
-        telegram_application.add_handler(CallbackQueryHandler(handle_callback_query, pattern="^(group_|product_|confirm_cart)"))
-        telegram_application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|select_group_)"))
-    
-    return telegram_application
-
 @app.route('/webhook', methods=['POST'])
-def webhook():
+async def webhook():
     """Webhook endpoint"""
     try:
-        application = get_application()
-        if application is None:
-            return 'Error: Application not initialized', 500
-            
         update = Update.de_json(request.get_json(force=True), application.bot)
-        application.process_update(update)
-        return 'OK', 200
+        if update is None:
+            logger.error("Update obyekti yaratilmadi")
+            return '', 400
+        await application.process_update(update)
+        logger.info("Update muvaffaqiyatli qayta ishlandi")
+        return '', 200
     except Exception as e:
-        logger.error(f"Webhook xatosi: {str(e)}", exc_info=True)
-        return 'Error', 500
+        logger.error(f"Webhook xatosi: {str(e)}")
+        return '', 500
 
 @app.route('/')
 def index():
     """Asosiy sahifa - health check uchun"""
     return 'Telegram Bot ishlamoqda!', 200
 
-def set_webhook():
+async def set_webhook():
     """Webhookni o'rnatish"""
     try:
-        application = get_application()
-        if application is None:
-            logger.error("Webhook o'rnatish uchun application yaratib bo'lmadi")
-            return
-            
-        application.bot.setWebhook(url=URL)
-        logger.info(f"Webhook o'rnatildi: {URL}")
+        await application.bot.setWebhook(url=WEBHOOK_URL)
+        logger.info(f"Webhook o'rnatildi: {WEBHOOK_URL}")
     except Exception as e:
         logger.error(f"Webhook o'rnatish xatosi: {e}")
 
+# Handlerlarni qo‘shish
+application.add_handler(CommandHandler("start", start))
+application.add_handler(CommandHandler("id", get_id))
+application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+application.add_handler(MessageHandler(filters.LOCATION, handle_location))
+application.add_handler(CallbackQueryHandler(handle_callback_query, pattern="^(group_|product_|confirm_cart)"))
+application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|select_group_)"))
+
 if __name__ == "__main__":
     init_sheets()
-    application = get_application()
-    if application:
-        set_webhook()
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
+    application.run_webhook(
+        listen='0.0.0.0',
+        port=int(os.environ.get('PORT', 10000)),
+        webhook_url=WEBHOOK_URL
+    )

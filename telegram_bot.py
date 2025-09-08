@@ -1,4 +1,4 @@
-ohirgi yuborgan telegram_bot.py kodi toliq yozilganmi negadir kozimga kichik korinmoqda avvalgi kod mana bu korinishda edi import gspread
+import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Location
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes

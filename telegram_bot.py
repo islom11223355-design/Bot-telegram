@@ -512,37 +512,45 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Faoliyat turini tanlang:", reply_markup=reply_markup)
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Callback so'rovlarini qayta ishlash"""
     query = update.callback_query
     user_id = str(query.from_user.id)
     data = query.data
     logger.info(f"Callback query from {user_id}: {data}")
 
-    if data.startswith("group_"):
-        group_name = data[len("group_"):]
-        USER_SELECTED_GROUP[user_id] = group_name
-        products = get_products(group_name)
-        if not products:
-            await query.message.reply_text(f"{group_name} guruhida mahsulotlar yo'q.")
+    try:
+        if data.startswith("group_"):
+            group_name = data[len("group_"):]
+            USER_SELECTED_GROUP[user_id] = group_name
+            products = get_products(group_name)
+            if not products:
+                await query.message.reply_text(f"{group_name} guruhida mahsulotlar yo'q.")
+                await query.answer()
+                return
+            keyboard = [[InlineKeyboardButton(f"{p['name']} ({format_currency(p['price'])})", callback_data=f"product_{p['name']}")] for p in products]
+            keyboard.append([InlineKeyboardButton("Savatni tasdiqlash", callback_data="confirm_cart")])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.message.reply_text(f"{group_name} guruhidagi mahsulotlar:", reply_markup=reply_markup)
             await query.answer()
-            return
-        keyboard = [[InlineKeyboardButton(f"{p['name']} ({format_currency(p['price'])})", callback_data=f"product_{p['name']}")] for p in products]
-        keyboard.append([InlineKeyboardButton("Savatni tasdiqlash", callback_data="confirm_cart")])
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.message.reply_text(f"{group_name} guruhidagi mahsulotlar:", reply_markup=reply_markup)
-        await query.answer()
-    elif data.startswith("product_"):
-        product_name = data[len("product_"):]
-        USER_STATE[user_id] = {"step": "quantity", "product_name": product_name}
-        await query.message.reply_text(f"{product_name} uchun miqdorni kiriting:")
-        await query.answer()
-    elif data == "confirm_cart":
-        if not CART.get(user_id):
-            await query.message.reply_text("Savat bo'sh! Iltimos, avval mahsulot qo'shing.")
+        elif data.startswith("product_"):
+            product_name = data[len("product_"):]
+            USER_STATE[user_id] = {"step": "quantity", "product_name": product_name}
+            await query.message.reply_text(f"{product_name} uchun miqdorni kiriting:")
             await query.answer()
-            return
-        USER_STATE[user_id] = {"step": "order_location"}
-        await query.message.reply_text("Buyurtma yetkazib beriladigan lokatsiyani yuboring:", reply_markup=ReplyKeyboardMarkup([[KeyboardButton("Lokatsiyani yuborish", request_location=True)]], resize_keyboard=True))
+        elif data == "confirm_cart":
+            if not CART.get(user_id):
+                await query.message.reply_text("Savat bo'sh! Iltimos, avval mahsulot qo'shing.")
+                await query.answer()
+                return
+            USER_STATE[user_id] = {"step": "order_location"}
+            await query.message.reply_text("Buyurtma yetkazib beriladigan lokatsiyani yuboring:", reply_markup=ReplyKeyboardMarkup([[KeyboardButton("Lokatsiyani yuborish", request_location=True)]], resize_keyboard=True))
+            await query.answer()
+    except (TimedOut, NetworkError) as e:
+        logger.error(f"TimedOut in handle_callback_query: {e}")
+        await query.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
+        await query.answer()
+    except Exception as e:
+        logger.error(f"Unexpected error in handle_callback_query: {e}")
+        await query.message.reply_text("Xato yuz berdi, iltimos, keyinroq urinib ko'ring.")
         await query.answer()
 
 async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -937,22 +945,14 @@ def main():
     """Botni ishga tushirish"""
     init_sheets()
     request = HTTPXRequest(
-        connection_pool_size=30,  # Ulanishlar sonini ko'paytirish
-        read_timeout=90.0,       # Vaqt chegarasini uzaytirish
-        write_timeout=90.0,
-        connect_timeout=90.0,
-        pool_timeout=90.0
+        connection_pool_size=50,  # Ko'proq ulanishlar uchun
+        read_timeout=120.0,       # Vaqt chegarasini oshirish
+        write_timeout=120.0,
+        connect_timeout=120.0,
+        pool_timeout=120.0,
+        max_retries=3             # Qayta urinishlar sonini qo'shish
     )
     application = Application.builder().token(BOT_TOKEN).request(request).build()
-    
-    # Xato boshqaruvi uchun handler qo'shish
-    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.error(f"Update {update} caused error {context.error}")
-        if update and hasattr(update, 'message'):
-            try:
-                await update.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
-            except Exception as e:
-                logger.error(f"Error sending error message: {e}")
     
     application.add_error_handler(error_handler)
     
@@ -964,8 +964,8 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|select_group_)"))
     
     application.run_polling(
-        poll_interval=1.0,
-        timeout=90,
+        poll_interval=2.0,        # Polling intervalini oshirish
+        timeout=120,              # Vaqt chegarasini oshirish
         drop_pending_updates=True
     )
 

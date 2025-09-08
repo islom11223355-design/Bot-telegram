@@ -16,9 +16,6 @@ app = Flask(__name__)
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Global Application obyekti
-application = None
-
 # Google Sheets sozlamalari
 SCOPE = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 CREDS_JSON = json.loads(os.getenv("GOOGLE_SHEETS_CREDS"))
@@ -40,6 +37,9 @@ USER_STATE = {}
 CART = {}
 BONUS_REQUESTS = {}
 USER_SELECTED_GROUP = {}
+
+# Global Application obyekti
+telegram_application = None
 
 def format_currency(amount):
     """Narxni 40 000 so'm ko'rinishida formatlash"""
@@ -824,7 +824,7 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = USER_STATE.get(user_id)
         if not state:
             await update.message.reply_text("Xato: Holat topilmadi. Iltimos, /start orqali qaytadan boshlang.", **options)
-            logger.error(f"Admin {user_id} uchran USER_STATE topilmadi")
+            logger.error(f"Admin {user_id} uchun USER_STATE topilmadi")
             return
         logger.info(f"Admin {user_id} holati: {state['step']}, kiritilgan matn: {text}")
         if state["step"] == "group_name":
@@ -916,16 +916,17 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif state["step"] == "edit_product_name":
             if not text.strip():
                 await update.message.reply_text("Iltimos, mahsulot nomini kiriting (bo'sh bo'lmasligi kerak).", **options)
-            else:
-                USER_STATE[user_id]["new_product_name"] = text.strip()
-                USER_STATE[user_id]["step"] = "edit_product_price"
-                await update.message.reply_text(
-                    f"Yangi nom saqlandi: {text.strip()}\n"
-                    f"Joriy narx: {format_currency(state['current_price'])}\n"
-                    f"Yangi narx kiriting (yoki o'zgartirmaslik uchun joriy narxni qaytaring):",
-                    **options
-                )
-                logger.info(f"Admin {user_id} yangi mahsulot nomi kiritdi: {text.strip()}")
+                logger.warning(f"Admin {user_id} bo'sh mahsulot nomi kiritdi")
+                return
+            USER_STATE[user_id]["new_product_name"] = text.strip()
+            USER_STATE[user_id]["step"] = "edit_product_price"
+            await update.message.reply_text(
+                f"Yangi nom saqlandi: {text.strip()}\n"
+                f"Joriy narx: {format_currency(state['current_price'])}\n"
+                f"Yangi narx kiriting (yoki o'zgartirmaslik uchun joriy narxni qaytaring):",
+                **options
+            )
+            logger.info(f"Admin {user_id} yangi mahsulot nomi kiritdi: {text.strip()}")
         elif state["step"] == "edit_product_price":
             try:
                 price = float(text)
@@ -983,11 +984,35 @@ async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
         options["message_thread_id"] = update.message.message_thread_id
     await update.message.reply_text(f"Sizning ID: {update.effective_user.id}", **options)
 
+def get_application():
+    """Application obyektini olish yoki yaratish"""
+    global telegram_application
+    if telegram_application is None:
+        BOT_TOKEN = os.getenv("BOT_TOKEN")
+        if not BOT_TOKEN:
+            logger.error("BOT_TOKEN topilmadi!")
+            return None
+        
+        telegram_application = Application.builder().token(BOT_TOKEN).build()
+        
+        # Handlerni qo'shish
+        telegram_application.add_handler(CommandHandler("start", start))
+        telegram_application.add_handler(CommandHandler("id", get_id))
+        telegram_application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+        telegram_application.add_handler(MessageHandler(filters.LOCATION, handle_location))
+        telegram_application.add_handler(CallbackQueryHandler(handle_callback_query, pattern="^(group_|product_|confirm_cart)"))
+        telegram_application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|select_group_)"))
+    
+    return telegram_application
+
 @app.route('/webhook', methods=['POST'])
 def webhook():
     """Webhook endpoint"""
-    global application
     try:
+        application = get_application()
+        if application is None:
+            return 'Error: Application not initialized', 500
+            
         update = Update.de_json(request.get_json(force=True), application.bot)
         application.process_update(update)
         return 'OK', 200
@@ -1002,28 +1027,20 @@ def index():
 
 def set_webhook():
     """Webhookni o'rnatish"""
-    global application
     try:
+        application = get_application()
+        if application is None:
+            logger.error("Webhook o'rnatish uchun application yaratib bo'lmadi")
+            return
+            
         application.bot.setWebhook(url=URL)
         logger.info(f"Webhook o'rnatildi: {URL}")
     except Exception as e:
         logger.error(f"Webhook o'rnatish xatosi: {e}")
 
-def main():
-    """Botni ishga tushirish"""
-    global application
-    init_sheets()
-    application = Application.builder().token(BOT_TOKEN).build()
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("id", get_id))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler(filters.LOCATION, handle_location))
-    application.add_handler(CallbackQueryHandler(handle_callback_query, pattern="^(group_|product_|confirm_cart)"))
-    application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|select_group_)"))
-
-    set_webhook()
-    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))
-
 if __name__ == "__main__":
-    main()
+    init_sheets()
+    application = get_application()
+    if application:
+        set_webhook()
+    app.run(host='0.0.0.0', port=int(os.environ.get('PORT', 5000)))

@@ -949,10 +949,21 @@ def main():
         read_timeout=120.0,       # Vaqt chegarasini oshirish
         write_timeout=120.0,
         connect_timeout=120.0,
-        pool_timeout=120.0,
-        max_retries=3             # Qayta urinishlar sonini qo'shish
+        pool_timeout=120.0
     )
     application = Application.builder().token(BOT_TOKEN).request(request).build()
+    
+    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.error(f"Update {update} caused error {context.error}")
+        try:
+            if update and update.message:
+                await update.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
+            elif update and update.callback_query:
+                await update.callback_query.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
+            else:
+                logger.warning("No message or callback query available to send error response.")
+        except Exception as e:
+            logger.error(f"Error sending error message: {e}")
     
     application.add_error_handler(error_handler)
     

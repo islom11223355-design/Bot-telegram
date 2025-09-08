@@ -994,8 +994,14 @@ class DummyHandler(BaseHTTPRequestHandler):
         self.send_header("Content-type", "text/plain")
         self.end_headers()
         self.wfile.write(b"Bot is running")
+    
     def do_POST(self):  # Webhook so'rovlarini qayta ishlash uchun
         self.send_response(200)
+        self.end_headers()
+    
+    def do_HEAD(self):  # Render sog'liq tekshiruvi uchun
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
         self.end_headers()
 
 def run_http_server():
@@ -1050,7 +1056,8 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|select_group_)"))
     
     # Webhookni o'chirish
-    loop = asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
     loop.run_until_complete(clear_webhook(application.bot))
     
     # HTTP serverni alohida thread'da ishga tushirish

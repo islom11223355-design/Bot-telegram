@@ -1,6 +1,6 @@
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup, Location
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
 import logging
@@ -493,7 +493,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Faoliyat turini tanlang:", reply_markup=reply_markup)
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-
+    """Callback so'rovlarini qayta ishlash"""
     query = update.callback_query
     user_id = str(query.from_user.id)
     data = query.data
@@ -697,22 +697,13 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.reply_text(f"{group_name} guruhidagi mahsulotlarni tanlang:", reply_markup=reply_markup)
         await query.answer()
-
-def get_user_data_rows():
-    """Barcha foydalanuvchi ma'lumotlarini olish"""
-    try:
-        records = HARIDORLAR_SHEET.get_all_records()
-        return [{
-            "id": str(record["ID"]),
-            "name": record["Ism"],
-            "phone": record["Telefon"],
-            "address": record["Manzil"],
-            "role": record["Faoliyat turi"],
-            "bonus": float(record["Bonus"] or 0)
-        } for record in records]
-    except Exception as e:
-        logger.error(f"Haridorlar ro'yxatini olish xatosi: {e}")
-        return []
+    elif data.startswith("select_group_add_"):
+        group_name = data[len("select_group_add_"):]
+        USER_SELECTED_GROUP[user_id] = group_name
+        USER_STATE[user_id] = {"step": "product_name"}
+        await query.message.reply_text(f"{group_name} guruhiga yangi mahsulot nomini kiriting:")
+        logger.info(f"Admin {user_id} mahsulot qo'shishni boshladi: Guruh={group_name}")
+        await query.answer()
 
 async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin funksiyalari"""
@@ -927,10 +918,10 @@ def main():
     """Botni ishga tushirish"""
     init_sheets()
     request = HTTPXRequest(
-        connection_pool_size=10,
-        read_timeout=30.0,
-        write_timeout=30.0,
-        connect_timeout=30.0
+        connection_pool_size=20,
+        read_timeout=60.0,
+        write_timeout=60.0,
+        connect_timeout=60.0
     )
     application = Application.builder().token(BOT_TOKEN).request(request).build()
     application.add_handler(CommandHandler("start", start))
@@ -942,7 +933,7 @@ def main():
     
     application.run_polling(
         poll_interval=1.0,
-        timeout=30,
+        timeout=60,
         drop_pending_updates=True
     )
 

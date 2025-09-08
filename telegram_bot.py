@@ -1,8 +1,10 @@
+```python
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
+from telegram.error import TimedOut, NetworkError  # Yangi import qo‘shildi
 import logging
 import json
 import os
@@ -273,163 +275,181 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
     logger.info(f"User {user_id} xabari: {text}")
 
-    if user_id in ADMINS:
-        await handle_admin(update, context)
-        return
+    try:
+        if user_id in ADMINS:
+            await handle_admin(update, context)
+            return
 
-    user_data = get_user_data(user_id)
-    if text == "Ma'lumotlaringizni saqlang" and not user_data:
-        USER_STATE[user_id] = {"step": "name"}
-        await update.message.reply_text("Ismingizni kiriting:")
-    elif text == "Shaxsiy ma'lumotlarni o'zgartirish" and user_data:
-        await context.bot.send_message(
-            chat_id=ADMINS[0],
-            text=f"Foydalanuvchi {user_id} ({user_data['name']}) shaxsiy ma'lumotlarini o'zgartirmoqchi. Tasdiqlaysizmi?",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Tasdiqlash", callback_data=f"approve_edit_{user_id}"),
-                 InlineKeyboardButton("Rad etish", callback_data=f"reject_edit_{user_id}")]
-            ])
-        )
-        await update.message.reply_text("Ma'lumotlarni o'zgartirish so'rovi adminga yuborildi. Tasdiqlanishini kuting.")
-    elif text == "Mahsulot buyurtma qilish":
-        CART[user_id] = []
-        groups = get_groups()
-        if not groups:
-            await update.message.reply_text("Hozirda guruhlar mavjud emas.")
-            return
-        keyboard = [[InlineKeyboardButton(group, callback_data=f"group_{group}")] for group in groups]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("Mahsulot buyurtma qilish uchun guruhni tanlang:", reply_markup=reply_markup)
-    elif text == "Mening buyurtmalarim":
-        records = BUYURTMALAR_SHEET.get_all_records()
-        orders = []
-        for record in records:
-            if str(record["Haridor ID"]) == user_id:
-                orders.append(
-                    f"Sana: {record['Sana']}\n"
-                    f"Guruh: {record['Guruh nomi']}\n"
-                    f"Mahsulotlar:\n{record['Mahsulotlar']}\n"
-                    f"Umumiy summa: {format_currency(record['Umumiy summa'])}"
-                )
-        if orders:
-            await update.message.reply_text("\n\n".join(orders))
-        else:
-            await update.message.reply_text("Sizda buyurtmalar yo'q.")
-    elif text == "Umumiy Bonus" and user_data and user_data["role"] == "Usta":
-        await update.message.reply_text(f"Sizning umumiy bonusingiz: {format_currency(user_data['bonus'])}")
-    elif text == "Bonusni yechish" and user_data and user_data["role"] == "Usta":
-        if user_data["bonus"] <= 0:
-            await update.message.reply_text("Sizda yechish uchun bonus mavjud emas.")
-            return
-        BONUS_REQUESTS[user_id] = user_data["bonus"]
-        await context.bot.send_message(
-            chat_id=ADMINS[0],
-            text=f"Foydalanuvchi {user_id} ({user_data['name']}) {format_currency(user_data['bonus'])} bonusni yechmoqchi. Tasdiqlaysizmi?",
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("Tasdiqlash", callback_data=f"approve_bonus_{user_id}"),
-                 InlineKeyboardButton("Rad etish", callback_data=f"reject_bonus_{user_id}")]
-            ])
-        )
-        await update.message.reply_text("Bonusni yechish so'rovi adminga yuborildi.")
-    elif text == "Admin bilan bog'lanish":
-        await update.message.reply_text(f"Admin bilan bog'lanish uchun: [{ADMINS[0]}](tg://user?id={ADMINS[0]})", parse_mode="Markdown")
-    elif user_id in USER_STATE:
-        state = USER_STATE[user_id]
-        if state["step"] == "name":
-            USER_STATE[user_id]["name"] = text
-            USER_STATE[user_id]["step"] = "phone"
-            await update.message.reply_text("Telefon raqamingizni kiriting (+998XXXXXXXXX):")
-        elif state["step"] == "phone":
-            if re.match(r"^\+998\d{9}$", text):
-                USER_STATE[user_id]["phone"] = text
-                USER_STATE[user_id]["step"] = "location"
-                keyboard = [[KeyboardButton("Lokatsiyani yuborish", request_location=True)]]
-                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                await update.message.reply_text("Lokatsiyangizni yuboring:", reply_markup=reply_markup)
-            else:
-                await update.message.reply_text("Iltimos, to'g'ri telefon raqamini kiriting (+998XXXXXXXXX):")
-        elif state["step"] == "role":
-            if text in ["Do'kon egasi", "Qurilish kompaniyasi", "Uy egasi", "Usta"]:
-                USER_STATE[user_id]["role"] = text
-                data = {
-                    "name": USER_STATE[user_id]["name"],
-                    "phone": USER_STATE[user_id]["phone"],
-                    "address": USER_STATE[user_id]["address"],
-                    "role": text,
-                    "bonus": 0
-                }
-                save_user_data(user_id, data)
-                del USER_STATE[user_id]
-                keyboard = [
-                    ["Shaxsiy ma'lumotlarni o'zgartirish", "Mahsulot buyurtma qilish"],
-                    ["Mening buyurtmalarim"]
-                ]
-                if text == "Usta":
-                    keyboard.append(["Umumiy Bonus", "Bonusni yechish"])
-                keyboard.append(["Admin bilan bog'lanish"])
-                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                await update.message.reply_text("Ma'lumotlaringiz saqlandi!", reply_markup=reply_markup)
-            else:
-                await update.message.reply_text("Iltimos, quyidagi variantlardan birini tanlang: Do'kon egasi, Qurilish kompaniyasi, Uy egasi, Usta")
-        elif state["step"] == "quantity":
+        user_data = get_user_data(user_id)
+        if text == "Ma'lumotlaringizni saqlang" and not user_data:
+            USER_STATE[user_id] = {"step": "name"}
+            await update.message.reply_text("Ismingizni kiriting:")
+        elif text == "Shaxsiy ma'lumotlarni o'zgartirish" and user_data:
             try:
-                quantity = int(text)
-                if quantity <= 0:
-                    await update.message.reply_text("Iltimos, 0 dan katta miqdor kiriting.")
-                    return
-                product_name = USER_STATE[user_id]["product_name"]
-                group_name = USER_SELECTED_GROUP.get(user_id, "")
-                products = get_products(group_name)
-                product = next((p for p in products if p["name"] == product_name), None)
-                if product:
-                    CART[user_id].append({"name": product_name, "quantity": quantity, "price": product["price"], "bonus_percent": product["bonus_percent"]})
-                    keyboard = [[InlineKeyboardButton(p["name"], callback_data=f"product_{p['name']}")] for p in products]
-                    keyboard.append([InlineKeyboardButton("Savatni tasdiqlash", callback_data="confirm_cart")])
-                    reply_markup = InlineKeyboardMarkup(keyboard)
-                    await update.message.reply_text(f"{product_name} ({quantity} dona) savatga qo'shildi. Yana mahsulot qo'shasizmi yoki savatni tasdiqlaysizmi?", reply_markup=reply_markup)
+                await context.bot.send_message(
+                    chat_id=ADMINS[0],
+                    text=f"Foydalanuvchi {user_id} ({user_data['name']}) shaxsiy ma'lumotlarini o'zgartirmoqchi. Tasdiqlaysizmi?",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Tasdiqlash", callback_data=f"approve_edit_{user_id}"),
+                         InlineKeyboardButton("Rad etish", callback_data=f"reject_edit_{user_id}")]
+                    ])
+                )
+                await update.message.reply_text("Ma'lumotlarni o'zgartirish so'rovi adminga yuborildi. Tasdiqlanishini kuting.")
+            except (TimedOut, NetworkError) as e:
+                logger.error(f"TimedOut in handle_message (send_message): {e}")
+                await update.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
+        elif text == "Mahsulot buyurtma qilish":
+            CART[user_id] = []
+            groups = get_groups()
+            if not groups:
+                await update.message.reply_text("Hozirda guruhlar mavjud emas.")
+                return
+            keyboard = [[InlineKeyboardButton(group, callback_data=f"group_{group}")] for group in groups]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("Mahsulot buyurtma qilish uchun guruhni tanlang:", reply_markup=reply_markup)
+        elif text == "Mening buyurtmalarim":
+            records = BUYURTMALAR_SHEET.get_all_records()
+            orders = []
+            for record in records:
+                if str(record["Haridor ID"]) == user_id:
+                    orders.append(
+                        f"Sana: {record['Sana']}\n"
+                        f"Guruh: {record['Guruh nomi']}\n"
+                        f"Mahsulotlar:\n{record['Mahsulotlar']}\n"
+                        f"Umumiy summa: {format_currency(record['Umumiy summa'])}"
+                    )
+            if orders:
+                await update.message.reply_text("\n\n".join(orders))
+            else:
+                await update.message.reply_text("Sizda buyurtmalar yo'q.")
+        elif text == "Umumiy Bonus" and user_data and user_data["role"] == "Usta":
+            await update.message.reply_text(f"Sizning umumiy bonusingiz: {format_currency(user_data['bonus'])}")
+        elif text == "Bonusni yechish" and user_data and user_data["role"] == "Usta":
+            if user_data["bonus"] <= 0:
+                await update.message.reply_text("Sizda yechish uchun bonus mavjud emas.")
+                return
+            BONUS_REQUESTS[user_id] = user_data["bonus"]
+            try:
+                await context.bot.send_message(
+                    chat_id=ADMINS[0],
+                    text=f"Foydalanuvchi {user_id} ({user_data['name']}) {format_currency(user_data['bonus'])} bonusni yechmoqchi. Tasdiqlaysizmi?",
+                    reply_markup=InlineKeyboardMarkup([
+                        [InlineKeyboardButton("Tasdiqlash", callback_data=f"approve_bonus_{user_id}"),
+                         InlineKeyboardButton("Rad etish", callback_data=f"reject_bonus_{user_id}")]
+                    ])
+                )
+                await update.message.reply_text("Bonusni yechish so'rovi adminga yuborildi.")
+            except (TimedOut, NetworkError) as e:
+                logger.error(f"TimedOut in handle_message (bonus request): {e}")
+                await update.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
+        elif text == "Admin bilan bog'lanish":
+            await update.message.reply_text(f"Admin bilan bog'lanish uchun: [{ADMINS[0]}](tg://user?id={ADMINS[0]})", parse_mode="Markdown")
+        elif user_id in USER_STATE:
+            state = USER_STATE[user_id]
+            if state["step"] == "name":
+                USER_STATE[user_id]["name"] = text
+                USER_STATE[user_id]["step"] = "phone"
+                await update.message.reply_text("Telefon raqamingizni kiriting (+998XXXXXXXXX):")
+            elif state["step"] == "phone":
+                if re.match(r"^\+998\d{9}$", text):
+                    USER_STATE[user_id]["phone"] = text
+                    USER_STATE[user_id]["step"] = "location"
+                    keyboard = [[KeyboardButton("Lokatsiyani yuborish", request_location=True)]]
+                    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                    await update.message.reply_text("Lokatsiyangizni yuboring:", reply_markup=reply_markup)
                 else:
-                    await update.message.reply_text("Mahsulot topilmadi. Iltimos, qaytadan urinib ko'ring.")
-                del USER_STATE[user_id]
-            except ValueError:
-                await update.message.reply_text("Iltimos, to'g'ri miqdor kiriting (butun son).")
-        elif state["step"] == "order_location":
-            await update.message.reply_text("Iltimos, buyurtma yetkazib beriladigan lokatsiyani yuboring:", reply_markup=ReplyKeyboardMarkup([[KeyboardButton("Lokatsiyani yuborish", request_location=True)]], resize_keyboard=True))
-        elif state["step"] == "edit_name":
-            USER_STATE[user_id]["name"] = text
-            USER_STATE[user_id]["step"] = "edit_phone"
-            await update.message.reply_text("Telefon raqamingizni kiriting (+998XXXXXXXXX):")
-        elif state["step"] == "edit_phone":
-            if re.match(r"^\+998\d{9}$", text):
-                USER_STATE[user_id]["phone"] = text
-                USER_STATE[user_id]["step"] = "edit_location"
-                keyboard = [[KeyboardButton("Lokatsiyani yuborish", request_location=True)]]
-                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                await update.message.reply_text("Lokatsiyangizni yuboring:", reply_markup=reply_markup)
-            else:
-                await update.message.reply_text("Iltimos, to'g'ri telefon raqamini kiriting (+998XXXXXXXXX):")
-        elif state["step"] == "edit_role":
-            if text in ["Do'kon egasi", "Qurilish kompaniyasi", "Uy egasi", "Usta"]:
-                USER_STATE[user_id]["role"] = text
-                data = {
-                    "name": USER_STATE[user_id]["name"],
-                    "phone": USER_STATE[user_id]["phone"],
-                    "address": USER_STATE[user_id]["address"],
-                    "role": text,
-                    "bonus": USER_STATE[user_id].get("bonus", 0)
-                }
-                update_user_data(user_id, data)
-                del USER_STATE[user_id]
-                keyboard = [
-                    ["Shaxsiy ma'lumotlarni o'zgartirish", "Mahsulot buyurtma qilish"],
-                    ["Mening buyurtmalarim"]
-                ]
-                if text == "Usta":
-                    keyboard.append(["Umumiy Bonus", "Bonusni yechish"])
-                keyboard.append(["Admin bilan bog'lanish"])
-                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                await update.message.reply_text("Ma'lumotlaringiz yangilandi!", reply_markup=reply_markup)
-            else:
-                await update.message.reply_text("Iltimos, quyidagi variantlardan birini tanlang: Do'kon egasi, Qurilish kompaniyasi, Uy egasi, Usta")
+                    await update.message.reply_text("Iltimos, to'g'ri telefon raqamini kiriting (+998XXXXXXXXX):")
+            elif state["step"] == "role":
+                if text in ["Do'kon egasi", "Qurilish kompaniyasi", "Uy egasi", "Usta"]:
+                    USER_STATE[user_id]["role"] = text
+                    data = {
+                        "name": USER_STATE[user_id]["name"],
+                        "phone": USER_STATE[user_id]["phone"],
+                        "address": USER_STATE[user_id]["address"],
+                        "role": text,
+                        "bonus": 0
+                    }
+                    save_user_data(user_id, data)
+                    del USER_STATE[user_id]
+                    keyboard = [
+                        ["Shaxsiy ma'lumotlarni o'zgartirish", "Mahsulot buyurtma qilish"],
+                        ["Mening buyurtmalarim"]
+                    ]
+                    if text == "Usta":
+                        keyboard.append(["Umumiy Bonus", "Bonusni yechish"])
+                    keyboard.append(["Admin bilan bog'lanish"])
+                    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                    await update.message.reply_text("Ma'lumotlaringiz saqlandi!", reply_markup=reply_markup)
+                else:
+                    await update.message.reply_text("Iltimos, quyidagi variantlardan birini tanlang: Do'kon egasi, Qurilish kompaniyasi, Uy egasi, Usta")
+            elif state["step"] == "quantity":
+                try:
+                    quantity = int(text)
+                    if quantity <= 0:
+                        await update.message.reply_text("Iltimos, 0 dan katta miqdor kiriting.")
+                        return
+                    product_name = USER_STATE[user_id]["product_name"]
+                    group_name = USER_SELECTED_GROUP.get(user_id, "")
+                    products = get_products(group_name)
+                    product = next((p for p in products if p["name"] == product_name), None)
+                    if product:
+                        CART[user_id].append({"name": product_name, "quantity": quantity, "price": product["price"], "bonus_percent": product["bonus_percent"]})
+                        keyboard = [[InlineKeyboardButton(p["name"], callback_data=f"product_{p['name']}")] for p in products]
+                        keyboard.append([InlineKeyboardButton("Savatni tasdiqlash", callback_data="confirm_cart")])
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        await update.message.reply_text(f"{product_name} ({quantity} dona) savatga qo'shildi. Yana mahsulot qo'shasizmi yoki savatni tasdiqlaysizmi?", reply_markup=reply_markup)
+                    else:
+                        await update.message.reply_text("Mahsulot topilmadi. Iltimos, qaytadan urinib ko'ring.")
+                    del USER_STATE[user_id]
+                except ValueError:
+                    await update.message.reply_text("Iltimos, to'g'ri miqdor kiriting (butun son).")
+                except (TimedOut, NetworkError) as e:
+                    logger.error(f"TimedOut in handle_message (quantity): {e}")
+                    await update.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
+            elif state["step"] == "order_location":
+                await update.message.reply_text("Iltimos, buyurtma yetkazib beriladigan lokatsiyani yuboring:", reply_markup=ReplyKeyboardMarkup([[KeyboardButton("Lokatsiyani yuborish", request_location=True)]], resize_keyboard=True))
+            elif state["step"] == "edit_name":
+                USER_STATE[user_id]["name"] = text
+                USER_STATE[user_id]["step"] = "edit_phone"
+                await update.message.reply_text("Telefon raqamingizni kiriting (+998XXXXXXXXX):")
+            elif state["step"] == "edit_phone":
+                if re.match(r"^\+998\d{9}$", text):
+                    USER_STATE[user_id]["phone"] = text
+                    USER_STATE[user_id]["step"] = "edit_location"
+                    keyboard = [[KeyboardButton("Lokatsiyani yuborish", request_location=True)]]
+                    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                    await update.message.reply_text("Lokatsiyangizni yuboring:", reply_markup=reply_markup)
+                else:
+                    await update.message.reply_text("Iltimos, to'g'ri telefon raqamini kiriting (+998XXXXXXXXX):")
+            elif state["step"] == "edit_role":
+                if text in ["Do'kon egasi", "Qurilish kompaniyasi", "Uy egasi", "Usta"]:
+                    USER_STATE[user_id]["role"] = text
+                    data = {
+                        "name": USER_STATE[user_id]["name"],
+                        "phone": USER_STATE[user_id]["phone"],
+                        "address": USER_STATE[user_id]["address"],
+                        "role": text,
+                        "bonus": USER_STATE[user_id].get("bonus", 0)
+                    }
+                    update_user_data(user_id, data)
+                    del USER_STATE[user_id]
+                    keyboard = [
+                        ["Shaxsiy ma'lumotlarni o'zgartirish", "Mahsulot buyurtma qilish"],
+                        ["Mening buyurtmalarim"]
+                    ]
+                    if text == "Usta":
+                        keyboard.append(["Umumiy Bonus", "Bonusni yechish"])
+                    keyboard.append(["Admin bilan bog'lanish"])
+                    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                    await update.message.reply_text("Ma'lumotlaringiz yangilandi!", reply_markup=reply_markup)
+                else:
+                    await update.message.reply_text("Iltimos, quyidagi variantlardan birini tanlang: Do'kon egasi, Qurilish kompaniyasi, Uy egasi, Usta")
+    except (TimedOut, NetworkError) as e:
+        logger.error(f"TimedOut in handle_message: {e}")
+        await update.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
+    except Exception as e:
+        logger.error(f"Umumiy xato in handle_message: {e}")
+        await update.message.reply_text("Xato yuz berdi, admin bilan bog'laning.")
 
 async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lokatsiya qabul qilish"""
@@ -918,12 +938,25 @@ def main():
     """Botni ishga tushirish"""
     init_sheets()
     request = HTTPXRequest(
-        connection_pool_size=20,
-        read_timeout=60.0,
-        write_timeout=60.0,
-        connect_timeout=60.0
+        connection_pool_size=30,  # Ulanishlar sonini ko'paytirish
+        read_timeout=90.0,       # Vaqt chegarasini uzaytirish
+        write_timeout=90.0,
+        connect_timeout=90.0,
+        pool_timeout=90.0
     )
     application = Application.builder().token(BOT_TOKEN).request(request).build()
+    
+    # Xato boshqaruvi uchun handler qo'shish
+    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        logger.error(f"Update {update} caused error {context.error}")
+        if update and hasattr(update, 'message'):
+            try:
+                await update.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
+            except Exception as e:
+                logger.error(f"Error sending error message: {e}")
+    
+    application.add_error_handler(error_handler)
+    
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("id", get_id))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -933,9 +966,10 @@ def main():
     
     application.run_polling(
         poll_interval=1.0,
-        timeout=60,
+        timeout=90,
         drop_pending_updates=True
     )
 
 if __name__ == "__main__":
     main()
+```

@@ -31,7 +31,8 @@ BUYURTMALAR_SHEET = SHEET.open_by_key(SHEET_ID).worksheet("Buyurtmalar")
 
 # Bot sozlamalari
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-URL = os.getenv("WEBHOOK_URL")
+RENDER_EXTERNAL_HOSTNAME = os.getenv('RENDER_EXTERNAL_HOSTNAME')
+URL = f"https://{RENDER_EXTERNAL_HOSTNAME}/webhook" if RENDER_EXTERNAL_HOSTNAME else os.getenv("WEBHOOK_URL")
 ADMINS = ["1163346232"]
 
 # Foydalanuvchi holatlari va boshqa sozlamalar
@@ -823,7 +824,7 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         state = USER_STATE.get(user_id)
         if not state:
             await update.message.reply_text("Xato: Holat topilmadi. Iltimos, /start orqali qaytadan boshlang.", **options)
-            logger.error(f"Admin {user_id} uchun USER_STATE topilmadi")
+            logger.error(f"Admin {user_id} uchran USER_STATE topilmadi")
             return
         logger.info(f"Admin {user_id} holati: {state['step']}, kiritilgan matn: {text}")
         if state["step"] == "group_name":
@@ -915,17 +916,16 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif state["step"] == "edit_product_name":
             if not text.strip():
                 await update.message.reply_text("Iltimos, mahsulot nomini kiriting (bo'sh bo'lmasligi kerak).", **options)
-                logger.warning(f"Admin {user_id} bo'sh mahsulot nomi kiritdi")
-                return
-            USER_STATE[user_id]["new_product_name"] = text.strip()
-            USER_STATE[user_id]["step"] = "edit_product_price"
-            await update.message.reply_text(
-                f"Yangi nom saqlandi: {text.strip()}\n"
-                f"Joriy narx: {format_currency(state['current_price'])}\n"
-                f"Yangi narx kiriting (yoki o'zgartirmaslik uchun joriy narxni qaytaring):",
-                **options
-            )
-            logger.info(f"Admin {user_id} yangi mahsulot nomi kiritdi: {text.strip()}")
+            else:
+                USER_STATE[user_id]["new_product_name"] = text.strip()
+                USER_STATE[user_id]["step"] = "edit_product_price"
+                await update.message.reply_text(
+                    f"Yangi nom saqlandi: {text.strip()}\n"
+                    f"Joriy narx: {format_currency(state['current_price'])}\n"
+                    f"Yangi narx kiriting (yoki o'zgartirmaslik uchun joriy narxni qaytaring):",
+                    **options
+                )
+                logger.info(f"Admin {user_id} yangi mahsulot nomi kiritdi: {text.strip()}")
         elif state["step"] == "edit_product_price":
             try:
                 price = float(text)
@@ -994,6 +994,11 @@ def webhook():
     except Exception as e:
         logger.error(f"Webhook xatosi: {str(e)}", exc_info=True)
         return 'Error', 500
+
+@app.route('/')
+def index():
+    """Asosiy sahifa - health check uchun"""
+    return 'Telegram Bot ishlamoqda!', 200
 
 def set_webhook():
     """Webhookni o'rnatish"""

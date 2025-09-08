@@ -3,12 +3,15 @@ from oauth2client.service_account import ServiceAccountCredentials
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
-from telegram.error import TimedOut, NetworkError  # Yangi import qo‘shildi
+from telegram.error import TimedOut, NetworkError, Conflict
 import logging
 import json
 import os
 from datetime import datetime
 import re
+import asyncio
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 
 # Logging sozlamalari
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -393,7 +396,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     product = next((p for p in products if p["name"] == product_name), None)
                     if product:
                         CART[user_id].append({"name": product_name, "quantity": quantity, "price": product["price"], "bonus_percent": product["bonus_percent"]})
-                        keyboard = [[InlineKeyboardButton(p["name"], callback_data=f"product_{p['name']}")] for p in products]
+                        keyboard = [[InlineKeyboardButton(f"{p['name']} ({format_currency(p['price'])})", callback_data=f"product_{p['name']}")] for p in products]
                         keyboard.append([InlineKeyboardButton("Savatni tasdiqlash", callback_data="confirm_cart")])
                         reply_markup = InlineKeyboardMarkup(keyboard)
                         await update.message.reply_text(f"{product_name} ({quantity} dona) savatga qo'shildi. Yana mahsulot qo'shasizmi yoki savatni tasdiqlaysizmi?", reply_markup=reply_markup)
@@ -941,21 +944,50 @@ async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Foydalanuvchi ID'sini ko'rsatish"""
     await update.message.reply_text(f"Sizning ID: {update.effective_user.id}")
 
+# Oddiy HTTP server Render uchun port ochish
+class DummyHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Bot is running")
+    def do_POST(self):  # Webhook so'rovlarini qayta ishlash uchun
+        self.send_response(200)
+        self.end_headers()
+
+def run_http_server():
+    server_address = ('0.0.0.0', 8080)  # Render uchun 8080 port
+    httpd = HTTPServer(server_address, DummyHandler)
+    httpd.serve_forever()
+
+async def clear_webhook(bot):
+    """Webhookni o'chirish uchun funksiya"""
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+        logger.info("Webhook muvaffaqiyatli o'chirildi")
+    except Exception as e:
+        logger.error(f"Webhook o'chirishda xato: {e}")
+
 def main():
     """Botni ishga tushirish"""
     init_sheets()
     request = HTTPXRequest(
-        connection_pool_size=50,  # Ko'proq ulanishlar uchun
-        read_timeout=120.0,       # Vaqt chegarasini oshirish
-        write_timeout=120.0,
-        connect_timeout=120.0,
-        pool_timeout=120.0
+        connection_pool_size=20,  # Resurslarni optimallashtirish
+        read_timeout=150.0,       # Vaqt chegarasini oshirish
+        write_timeout=150.0,
+        connect_timeout=150.0,
+        pool_timeout=150.0
     )
     application = Application.builder().token(BOT_TOKEN).request(request).build()
     
     async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Update {update} caused error {context.error}")
         try:
+            if isinstance(context.error, Conflict):
+                logger.warning("Conflict error detected, attempting to clear webhook")
+                await clear_webhook(application.bot)
+                await asyncio.sleep(5)  # Qayta urinishdan oldin kutish
+                return
             if update and update.message:
                 await update.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
             elif update and update.callback_query:
@@ -974,10 +1006,21 @@ def main():
     application.add_handler(CallbackQueryHandler(handle_callback_query, pattern="^(group_|product_|confirm_cart)"))
     application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|select_group_)"))
     
+    # Webhookni o'chirish
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(clear_webhook(application.bot))
+    
+    # HTTP serverni alohida thread'da ishga tushirish
+    http_thread = threading.Thread(target=run_http_server, daemon=True)
+    http_thread.start()
+    logger.info("HTTP server started on port 8080")
+    
+    # Botni polling rejimida ishga tushirish
     application.run_polling(
-        poll_interval=2.0,        # Polling intervalini oshirish
-        timeout=120,              # Vaqt chegarasini oshirish
-        drop_pending_updates=True
+        poll_interval=5.0,        # Polling intervalini oshirish
+        timeout=180,              # Vaqt chegarasini oshirish
+        drop_pending_updates=True,
+        bootstrap_retries=3       # Qayta urinishlar sonini qo'shish
     )
 
 if __name__ == "__main__":

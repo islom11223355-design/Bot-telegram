@@ -264,8 +264,10 @@ def save_order(user_id, cart, address, group_name):
             cart_text,
             total_sum,
             total_bonus,
-            "No"
+            "Yes"
         ])
+        if total_bonus > 0:
+            update_bonus(user_id, total_bonus)
         logger.info(f"Buyurtma saqlandi: ID={user_id}, Guruh={group_name}, Bonus={total_bonus}")
         return BUYURTMALAR_SHEET.row_count
     except Exception as e:
@@ -384,7 +386,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"Guruh: {record['Guruh nomi']}\n"
                         f"Mahsulotlar:\n{record['Mahsulotlar']}\n"
                         f"Umumiy summa: {format_currency(record['Umumiy summa'])}\n"
-                        f"Holat: {'Tasdiqlangan' if record['Confirmed'] == 'Yes' else 'Tasdiqlanmagan'}"
+                        f"Holat: {'Tasdiqlangan' if record['Confirmed'] == 'Yes' else 'Rad etildi' if record['Confirmed'] == 'Rejected' else 'Tasdiqlanmagan'}"
                     )
             if orders:
                 await update.message.reply_text("\n\n".join(orders))
@@ -545,19 +547,27 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             group_name = USER_SELECTED_GROUP.get(user_id, "")
             total_sum = sum(item["price"] * item["quantity"] for item in CART[user_id])
             total_bonus = sum(item["price"] * item["quantity"] * (item["bonus_percent"] / 100) for item in CART[user_id]) if user_data["role"] == "Usta" else 0
-            cart_text = "\n".join([f"{item['name']} - {item['quantity']} dona, narxi: {format_currency(item['price'])}, jami: {format_currency(item['price'] * item['quantity'])}" magma = f"[{item['name']}]({item.get('image_url', '')})" if item.get('image_url') else item['name'] for item in CART[user_id]])
-            order_row = save_order(user_id, CART[user_id], address, group_name)
-            if order_row is None:
-                await update.message.reply_text("Xato: Buyurtma saqlanmadi.")
-                return
+            cart_text = "\n".join([f"{item['name']} - {item['quantity']} dona, narxi: {format_currency(item['price'])}, jami: {format_currency(item['price'] * item['quantity'])}" for item in CART[user_id]])
+            temp_order = {
+                "user_id": user_id,
+                "user_name": user_data["name"],
+                "phone": user_data["phone"],
+                "address": address,
+                "group_name": group_name,
+                "cart_text": cart_text,
+                "total_sum": total_sum,
+                "bonus_sum": total_bonus,
+                "maps_link": maps_link
+            }
+            ORDER_CACHE[user_id] = temp_order
             bonus_text = f"\nUshbu buyurtma uchun yig'ilgan bonus: {format_currency(total_bonus)}" if user_data["role"] == "Usta" else ""
             await context.bot.send_message(
                 chat_id=ADMINS[0],
                 text=f"Yangi buyurtma:\nHaridor ID: {user_id}\nHaridor: [{user_data['name']}](tg://user?id={user_id})\nTelefon: {user_data['phone']}\nManzil: [{address}]({maps_link})\nGuruh: {group_name}\nMahsulotlar:\n{cart_text}\nUmumiy summa: {format_currency(total_sum)}{bonus_text}",
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Tasdiqlash", callback_data=f"confirm_order_{order_row}"),
-                     InlineKeyboardButton("Rad etish", callback_data=f"reject_order_{order_row}")]
+                    [InlineKeyboardButton("Tasdiqlash", callback_data=f"confirm_order_{user_id}"),
+                     InlineKeyboardButton("Rad etish", callback_data=f"reject_order_{user_id}")]
                 ])
             )
             keyboard = [
@@ -570,8 +580,6 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             await update.message.reply_text("Buyurtmangiz adminga yuborildi. Tasdiqlanishini kuting.", reply_markup=reply_markup)
             del USER_STATE[user_id]
-            del CART[user_id]
-            del USER_SELECTED_GROUP[user_id]
         elif USER_STATE[user_id]["step"] == "edit_location":
             USER_STATE[user_id]["address"] = address
             USER_STATE[user_id]["step"] = "edit_role"
@@ -581,6 +589,8 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             ]
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             await update.message.reply_text("Faoliyat turini tanlang:", reply_markup=reply_markup)
+
+ORDER_CACHE = {}
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Foydalanuvchi callback so'rovlarini qayta ishlash"""
@@ -634,61 +644,64 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
 
     try:
         if data.startswith("confirm_order_"):
-            order_row = int(data[len("confirm_order_"):])
-            records = BUYURTMALAR_SHEET.get_all_records()
-            if order_row <= 1 or order_row > len(records) + 1:
+            order_user_id = data[len("confirm_order_"):]
+            if order_user_id not in ORDER_CACHE:
                 await query.message.reply_text("Xato: Buyurtma topilmadi!")
-                logger.error(f"confirm_order: Buyurtma topilmadi: Row={order_row}")
+                logger.error(f"confirm_order: Buyurtma topilmadi: User ID={order_user_id}")
                 await query.answer()
                 return
-            record = records[order_row - 2]
-            user_id = str(record["Haridor ID"])
-            bonus_amount = float(record["Bonus summasi"] or 0)
-            BUYURTMALAR_SHEET.update(f"J{order_row}", "Yes")
-            
-            if bonus_amount > 0:
-                if not update_bonus(user_id, bonus_amount):
-                    await query.message.reply_text("Xato: Bonus yangilanmadi!")
-                    logger.error(f"confirm_order: Bonus yangilanmadi: ID={user_id}, Bonus={bonus_amount}")
-                    await query.answer()
-                    return
-            
-            user_data = get_user_data(user_id)
+            order = ORDER_CACHE[order_user_id]
+            order_row = save_order(order["user_id"], CART[order_user_id], order["address"], order["group_name"])
+            if order_row is None:
+                await query.message.reply_text("Xato: Buyurtma saqlanmadi!")
+                logger.error(f"confirm_order: Buyurtma saqlanmadi: User ID={order_user_id}")
+                await query.answer()
+                return
+            user_data = get_user_data(order_user_id)
             if not user_data:
                 await query.message.reply_text("Xato: Foydalanuvchi topilmadi!")
-                logger.error(f"confirm_order: Haridor topilmadi: ID={user_id}")
+                logger.error(f"confirm_order: Haridor topilmadi: ID={order_user_id}")
                 await query.answer()
                 return
-            
-            total_sum = float(record["Umumiy summa"])
-            cart_text = record["Mahsulotlar"]
-            group_name = record["Guruh nomi"]
-            bonus_text = f"\nUshbu buyurtma uchun yig'ilgan bonus: {format_currency(bonus_amount)}\nUmumiy bonus: {format_currency(user_data['bonus'])}" if user_data["role"] == "Usta" else ""
+            bonus_text = f"\nUshbu buyurtma uchun yig'ilgan bonus: {format_currency(order['bonus_sum'])}\nUmumiy bonus: {format_currency(user_data['bonus'])}" if user_data["role"] == "Usta" else ""
             await context.bot.send_message(
-                chat_id=user_id,
-                text=f"Sizning buyurtmangiz tasdiqlandi, hamkorligingizdan hursandmiz!\nGuruh: {group_name}\nMahsulotlar:\n{cart_text}\nUmumiy summa: {format_currency(total_sum)}{bonus_text}",
+                chat_id=order_user_id,
+                text=f"Sizning buyurtmangiz tasdiqlandi, hamkorligingizdan hursandmiz!\nGuruh: {order['group_name']}\nMahsulotlar:\n{order['cart_text']}\nUmumiy summa: {format_currency(order['total_sum'])}{bonus_text}",
                 parse_mode="Markdown"
             )
+            await query.message.edit_text(
+                text=query.message.text + "\n\n**Holati: Tasdiqlangan**",
+                parse_mode="Markdown",
+                reply_markup=None
+            )
             await query.message.reply_text(f"Buyurtma tasdiqlandi.")
-            logger.info(f"Buyurtma tasdiqlandi: Row={order_row}, Haridor ID={user_id}, Bonus={bonus_amount}")
+            logger.info(f"Buyurtma tasdiqlandi: User ID={order_user_id}, Bonus={order['bonus_sum']}")
+            del ORDER_CACHE[order_user_id]
+            del CART[order_user_id]
+            del USER_SELECTED_GROUP[order_user_id]
             await query.answer()
         elif data.startswith("reject_order_"):
-            order_row = int(data[len("reject_order_"):])
-            records = BUYURTMALAR_SHEET.get_all_records()
-            if order_row <= 1 or order_row > len(records) + 1:
+            order_user_id = data[len("reject_order_"):]
+            if order_user_id not in ORDER_CACHE:
                 await query.message.reply_text("Xato: Buyurtma topilmadi!")
-                logger.error(f"reject_order: Buyurtma topilmadi: Row={order_row}")
+                logger.error(f"reject_order: Buyurtma topilmadi: User ID={order_user_id}")
                 await query.answer()
                 return
-            record = records[order_row - 2]
-            user_id = str(record["Haridor ID"])
-            BUYURTMALAR_SHEET.update(f"J{order_row}", "Rejected")
+            order = ORDER_CACHE[order_user_id]
             await context.bot.send_message(
-                chat_id=user_id,
+                chat_id=order_user_id,
                 text="Sizning buyurtmangiz rad etildi. Qo'shimcha ma'lumot uchun admin bilan bog'laning."
             )
+            await query.message.edit_text(
+                text=query.message.text + "\n\n**Holati: Rad etildi**",
+                parse_mode="Markdown",
+                reply_markup=None
+            )
             await query.message.reply_text(f"Buyurtma rad etildi.")
-            logger.info(f"Buyurtma rad etildi: Row={order_row}, Haridor ID={user_id}")
+            logger.info(f"Buyurtma rad etildi: User ID={order_user_id}")
+            del ORDER_CACHE[order_user_id]
+            del CART[order_user_id]
+            del USER_SELECTED_GROUP[order_user_id]
             await query.answer()
         elif data.startswith("approve_bonus_"):
             user_id = data[len("approve_bonus_"):]
@@ -747,6 +760,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 "phone": new_data[1],
                 "address": new_data[2],
                 "role": new_data[3],
+                "edit_request": "",
                 "edit_confirmed": "Yes"
             })
             if not update_user_data(user_id, user_data):
@@ -757,6 +771,11 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await context.bot.send_message(
                 chat_id=user_id,
                 text="Sizning shaxsiy ma'lumotlaringiz yangilandi!"
+            )
+            await query.message.edit_text(
+                text=query.message.text + "\n\n**Holati: Tasdiqlangan**",
+                parse_mode="Markdown",
+                reply_markup=None
             )
             await query.message.reply_text(f"Ma'lumotlarni o'zgartirish tasdiqlandi.")
             logger.info(f"Ma'lumotlarni o'zgartirish tasdiqlandi: ID={user_id}")
@@ -779,6 +798,11 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await context.bot.send_message(
                 chat_id=user_id,
                 text="Ma'lumotlarni o'zgartirish so'rovingiz rad etildi. Qo'shimcha ma'lumot uchun admin bilan bog'laning."
+            )
+            await query.message.edit_text(
+                text=query.message.text + "\n\n**Holati: Rad etildi**",
+                parse_mode="Markdown",
+                reply_markup=None
             )
             await query.message.reply_text(f"Ma'lumotlarni o'zgartirish rad etildi.")
             logger.info(f"Ma'lumotlarni o'zgartirish rad etildi: ID={user_id}")
@@ -1012,7 +1036,7 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"Mahsulotlar:\n{order['cart_text']}\n"
                             f"Umumiy summa: {format_currency(order['total_sum'])}\n"
                             f"{bonus_text}\n"
-                            f"Holat: {'Tasdiqlangan' if order['confirmed'] == 'Yes' else 'Tasdiqlanmagan'}",
+                            f"Holat: {'Tasdiqlangan' if order['confirmed'] == 'Yes' else 'Rad etildi' if order['confirmed'] == 'Rejected' else 'Tasdiqlanmagan'}",
                             parse_mode="Markdown",
                             reply_markup=InlineKeyboardMarkup(buttons)
                         )

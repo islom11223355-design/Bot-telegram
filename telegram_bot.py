@@ -284,8 +284,10 @@ def update_bonus(user_id, bonus_amount):
             if str(record["ID"]) == str(user_id):
                 current_bonus = float(record["Bonus"] or 0)
                 new_bonus = current_bonus + bonus_amount
-                HARIDORLAR_SHEET.update(f"F{i}", new_bonus)
-                USER_CACHE[user_id]["bonus"] = new_bonus
+                # F ustuniga yangi bonusni yozish
+                HARIDORLAR_SHEET.update_cell(i, 6, new_bonus)  # 6-ustun F (Bonus)
+                if user_id in USER_CACHE:
+                    USER_CACHE[user_id]["bonus"] = new_bonus
                 logger.info(f"Bonus yangilandi: ID={user_id}, Qo'shilgan={bonus_amount}, Umumiy={new_bonus}")
                 return True
         logger.error(f"Haridor topilmadi bonus yangilashda: ID={user_id}")
@@ -883,8 +885,8 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 return
             text = f"{group_name} guruhidagi mahsulotlar:\n"
             for p in products:
-                text += f"{p['name']}: {p['quantity']} dona, Bonus: {p['bonus_percent']}%\n"
-            await query.message.reply_text(text)
+                text += f"  • {p['name']}: {p['quantity']} dona, Narx: {format_currency(p['price'])}, Bonus: {p['bonus_percent']}%\n"
+            await query.message.reply_text(text, parse_mode="Markdown")
             await query.answer()
     except (TimedOut, NetworkError) as e:
         logger.error(f"TimedOut in handle_admin_callback: {e}")
@@ -930,10 +932,22 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             groups = get_groups()
             if not groups:
                 await update.message.reply_text("Hozirda guruhlar mavjud emas.")
+                logger.info(f"Admin {user_id} mahsulot ro'yxatini so'radi, lekin guruhlar yo'q")
                 return
-            keyboard = [[InlineKeyboardButton(group, callback_data=f"group_{group}")] for group in groups]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text("Mahsulotlar ro'yxatini ko'rish uchun guruhni tanlang:", reply_markup=reply_markup)
+            text = "Mahsulotlar ro'yxati:\n\n"
+            for group in groups:
+                products = get_products(group)
+                if products:
+                    text += f"**{group}**:\n"
+                    for p in products:
+                        text += f"  • {p['name']}: {p['quantity']} dona, Narx: {format_currency(p['price'])}, Bonus: {p['bonus_percent']}%\n"
+                    text += "\n"
+            if text == "Mahsulotlar ro'yxati:\n\n":
+                await update.message.reply_text("Hozirda mahsulotlar mavjud emas.")
+                logger.info(f"Admin {user_id} mahsulot ro'yxatini so'radi, lekin mahsulotlar yo'q")
+            else:
+                await update.message.reply_text(text, parse_mode="Markdown")
+                logger.info(f"Admin {user_id} mahsulot ro'yxatini oldi")
         elif text == "Buyurtmalar ro'yxati":
             USER_STATE[user_id] = {"step": "order_date"}
             await update.message.reply_text("Sanani kiriting (YYYY-MM-DD):")
@@ -1041,8 +1055,8 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         buttons = []
                         if order["confirmed"] == "No":
                             buttons = [
-                                [InlineKeyboardButton("Tasdiqlash", callback_data=f"confirm_order_{order['row']}"),
-                                 InlineKeyboardButton("Rad etish", callback_data=f"reject_order_{order['row']}")]
+                                [InlineKeyboardButton("Tasdiqlash", callback_data=f"confirm_order_{order['user_id']}"),
+                                 InlineKeyboardButton("Rad etish", callback_data=f"reject_order_{order['user_id']}")]
                             ]
                         await update.message.reply_text(
                             f"Buyurtma:\n"
@@ -1180,7 +1194,7 @@ def run_http_server():
 async def clear_webhook(bot):
     """Webhookni o'chirish uchun funksiya"""
     try:
-        await bot.delete_webhook(drop_pending_updates=True)
+        await bot.deleteWebhook(drop_pending_updates=True)
         logger.info("Webhook muvaffaqiyatli o'chirildi")
     except Exception as e:
         logger.error(f"Webhook o'chirishda xato: {e}")

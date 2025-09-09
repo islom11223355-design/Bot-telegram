@@ -1,9 +1,3 @@
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
-from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
-from telegram.request import HTTPXRequest
-from telegram.error import TimedOut, NetworkError, Conflict
 import logging
 import json
 import os
@@ -12,6 +6,12 @@ import re
 import asyncio
 import threading
 from http.server import HTTPServer, BaseHTTPRequestHandler
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
+from telegram.request import HTTPXRequest
+from telegram.error import TimedOut, NetworkError, Conflict
 
 # Logging sozlamalari
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -27,6 +27,7 @@ SHEET = CLIENT.open_by_key(SHEET_ID)
 HARIDORLAR_SHEET = SHEET.worksheet("Haridorlar")
 MAHSULOTLAR_SHEET = SHEET.worksheet("Mahsulotlar")
 BUYURTMALAR_SHEET = SHEET.worksheet("Buyurtmalar")
+GURUHLAR_SHEET = SHEET.worksheet("Guruhlar")
 
 # Bot sozlamalari
 BOT_TOKEN = os.getenv("BOT_TOKEN")  # Render'dan olingan token
@@ -50,13 +51,16 @@ def init_sheets():
     try:
         # Haridorlar sahifasi
         if not HARIDORLAR_SHEET.row_values(1):
-            HARIDORLAR_SHEET.append_row(["ID", "Ism", "Telefon", "Manzil", "Faoliyat turi", "Bonus"])
+            HARIDORLAR_SHEET.append_row(["ID", "Ism", "Telefon", "Manzil", "Faoliyat turi", "Bonus", "Tahrir So‘rovi", "Tahrir Tasdiqlangan"])
         # Mahsulotlar sahifasi
         if not MAHSULOTLAR_SHEET.row_values(1):
-            MAHSULOTLAR_SHEET.append_row(["Guruh nomi", "Mahsulot nomi", "Narx", "Bonus foizi"])
+            MAHSULOTLAR_SHEET.append_row(["Guruh nomi", "Mahsulot nomi", "Narx", "Bonus foizi", "Miqdori"])
         # Buyurtmalar sahifasi
         if not BUYURTMALAR_SHEET.row_values(1):
-            BUYURTMALAR_SHEET.append_row(["Haridor ID", "Buyurtmachi ismi", "Telefon", "Manzil", "Sana", "Guruh nomi", "Mahsulotlar", "Umumiy summa", "Bonus summasi"])
+            BUYURTMALAR_SHEET.append_row(["Haridor ID", "Buyurtmachi ismi", "Telefon", "Manzil", "Sana", "Guruh nomi", "Mahsulotlar", "Umumiy summa", "Bonus summasi", "Confirmed"])
+        # Guruhlar sahifasi
+        if not GURUHLAR_SHEET.row_values(1):
+            GURUHLAR_SHEET.append_row(["Guruh Nomi"])
     except Exception as e:
         logger.error(f"Sheets init xatosi: {e}")
 
@@ -69,30 +73,37 @@ def save_user_data(user_id, data):
             data["phone"],
             data["address"],
             data["role"],
-            data.get("bonus", 0)
+            data.get("bonus", 0),
+            "",
+            ""
         ])
         USER_CACHE[user_id] = data  # Keshni yangilash
         logger.info(f"Haridor saqlandi: ID={user_id}, Bonus={data.get('bonus', 0)}")
     except Exception as e:
         logger.error(f"Haridor saqlash xatosi: {e}")
 
-def update_user_data(user_id, data):
+def update_user_data(user_id, data, edit_request=False):
     """Foydalanuvchi ma'lumotlarini yangilash"""
     try:
         records = HARIDORLAR_SHEET.get_all_records()
         for i, record in enumerate(records, start=2):
             if str(record["ID"]) == str(user_id):
-                HARIDORLAR_SHEET.update(f"A{i}:F{i}", [[
+                values = [
                     str(user_id),
                     data["name"],
                     data["phone"],
                     data["address"],
                     data["role"],
-                    data.get("bonus", 0)
-                ]])
+                    data.get("bonus", 0),
+                    data.get("edit_request", ""),
+                    data.get("edit_confirmed", "")
+                ]
+                HARIDORLAR_SHEET.update(f"A{i}:H{i}", [values])
                 USER_CACHE[user_id] = data  # Keshni yangilash
                 logger.info(f"Haridor yangilandi: ID={user_id}, Bonus={data.get('bonus', 0)}")
                 return True
+        if edit_request:
+            save_user_data(user_id, data)
         logger.error(f"Haridor topilmadi: ID={user_id}")
         return False
     except Exception as e:
@@ -113,7 +124,9 @@ def get_user_data(user_id):
                     "phone": record["Telefon"],
                     "address": record["Manzil"],
                     "role": record["Faoliyat turi"],
-                    "bonus": float(record["Bonus"] or 0)
+                    "bonus": float(record["Bonus"] or 0),
+                    "edit_request": record["Tahrir So‘rovi"],
+                    "edit_confirmed": record["Tahrir Tasdiqlangan"]
                 }
                 USER_CACHE[user_id] = user_data
                 return user_data
@@ -129,12 +142,11 @@ def save_product(data):
             data["group_name"],
             data["name"],
             data["price"],
-            data["bonus_percent"]
+            data["bonus_percent"],
+            data.get("quantity", 0)
         ])
         cache_key = data["group_name"] or "all"
         PRODUCT_CACHE.pop(cache_key, None)  # Keshni tozalash
-        global GROUP_CACHE
-        GROUP_CACHE = None  # Guruhlar keshini tozalash
         logger.info(f"Mahsulot qo'shildi: {data['name']} ({data['group_name']})")
     except Exception as e:
         logger.error(f"Mahsulot saqlash xatosi: {e}")
@@ -145,15 +157,14 @@ def update_product(old_name, group_name, data):
         records = MAHSULOTLAR_SHEET.get_all_records()
         for i, record in enumerate(records, start=2):
             if record["Mahsulot nomi"] == old_name and record["Guruh nomi"] == group_name:
-                MAHSULOTLAR_SHEET.update(f"A{i}:D{i}", [[
+                MAHSULOTLAR_SHEET.update(f"A{i}:E{i}", [[
                     data["group_name"],
                     data["name"],
                     data["price"],
-                    data["bonus_percent"]
+                    data["bonus_percent"],
+                    data.get("quantity", 0)
                 ]])
                 PRODUCT_CACHE.pop(group_name, None)  # Keshni tozalash
-                global GROUP_CACHE
-                GROUP_CACHE = None  # Guruhlar keshini tozalash
                 logger.info(f"Mahsulot yangilandi: {old_name} -> {data['name']} ({data['group_name']})")
                 return True
         logger.error(f"Mahsulot topilmadi: {old_name} ({group_name})")
@@ -176,7 +187,8 @@ def get_products(group_name=None):
                     "group_name": record["Guruh nomi"],
                     "name": record["Mahsulot nomi"],
                     "price": float(record["Narx"]),
-                    "bonus_percent": float(record["Bonus foizi"])
+                    "bonus_percent": float(record["Bonus foizi"]),
+                    "quantity": float(record["Miqdori"] or 0)
                 })
         PRODUCT_CACHE[cache_key] = products
         return products
@@ -185,17 +197,27 @@ def get_products(group_name=None):
         return []
 
 def get_groups():
-    """Guruhlar ro'yxatini olish (kesh bilan)"""
+    """Guruhlar ro'yxatini olish (Guruhlar varag'idan)"""
     global GROUP_CACHE
     try:
         if GROUP_CACHE is not None:
             return GROUP_CACHE
-        records = MAHSULOTLAR_SHEET.get_all_records()
-        GROUP_CACHE = list(set(record["Guruh nomi"] for record in records if record["Guruh nomi"]))
+        records = GURUHLAR_SHEET.get_all_records()
+        GROUP_CACHE = list(set(record["Guruh Nomi"] for record in records if record["Guruh Nomi"]))
         return GROUP_CACHE
     except Exception as e:
         logger.error(f"Guruhlar olish xatosi: {e}")
         return []
+
+def save_group(group_name):
+    """Yangi guruh qo'shish"""
+    try:
+        GURUHLAR_SHEET.append_row([group_name])
+        global GROUP_CACHE
+        GROUP_CACHE = None  # Guruhlar keshini tozalash
+        logger.info(f"Yangi guruh qo'shildi: {group_name}")
+    except Exception as e:
+        logger.error(f"Guruh qo'shish xatosi: {e}")
 
 def save_order(user_id, cart, address, group_name):
     """Buyurtmani Google Sheets'ga saqlash"""
@@ -217,7 +239,8 @@ def save_order(user_id, cart, address, group_name):
             group_name,
             cart_text,
             total_sum,
-            total_bonus
+            total_bonus,
+            "No"
         ])
         logger.info(f"Buyurtma saqlandi: ID={user_id}, Guruh={group_name}, Bonus={total_bonus}")
         return BUYURTMALAR_SHEET.row_count
@@ -261,7 +284,8 @@ def get_orders_by_date(date):
                     "group_name": record["Guruh nomi"],
                     "cart_text": record["Mahsulotlar"],
                     "total_sum": float(record["Umumiy summa"]),
-                    "bonus_sum": float(record["Bonus summasi"] or 0)
+                    "bonus_sum": float(record["Bonus summasi"] or 0),
+                    "confirmed": record["Confirmed"]
                 })
         return orders
     except Exception as e:
@@ -312,19 +336,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             USER_STATE[user_id] = {"step": "name"}
             await update.message.reply_text("Ismingizni kiriting:")
         elif text == "Shaxsiy ma'lumotlarni o'zgartirish" and user_data:
-            try:
-                await context.bot.send_message(
-                    chat_id=ADMINS[0],
-                    text=f"Foydalanuvchi {user_id} ({user_data['name']}) shaxsiy ma'lumotlarini o'zgartirmoqchi. Tasdiqlaysizmi?",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("Tasdiqlash", callback_data=f"approve_edit_{user_id}"),
-                         InlineKeyboardButton("Rad etish", callback_data=f"reject_edit_{user_id}")]
-                    ])
-                )
-                await update.message.reply_text("Ma'lumotlarni o'zgartirish so'rovi adminga yuborildi. Tasdiqlanishini kuting.")
-            except (TimedOut, NetworkError) as e:
-                logger.error(f"TimedOut in handle_message (send_message): {e}")
-                await update.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
+            USER_STATE[user_id] = {"step": "edit_name", "bonus": user_data["bonus"]}
+            await update.message.reply_text(f"Joriy ism: {user_data['name']}\nYangi ismingizni kiriting:")
         elif text == "Mahsulot buyurtma qilish":
             CART[user_id] = []
             groups = get_groups()
@@ -343,7 +356,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         f"Sana: {record['Sana']}\n"
                         f"Guruh: {record['Guruh nomi']}\n"
                         f"Mahsulotlar:\n{record['Mahsulotlar']}\n"
-                        f"Umumiy summa: {format_currency(record['Umumiy summa'])}"
+                        f"Umumiy summa: {format_currency(record['Umumiy summa'])}\n"
+                        f"Holat: {'Tasdiqlangan' if record['Confirmed'] == 'Yes' else 'Tasdiqlanmagan'}"
                     )
             if orders:
                 await update.message.reply_text("\n\n".join(orders))
@@ -356,19 +370,15 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text("Sizda yechish uchun bonus mavjud emas.")
                 return
             BONUS_REQUESTS[user_id] = user_data["bonus"]
-            try:
-                await context.bot.send_message(
-                    chat_id=ADMINS[0],
-                    text=f"Foydalanuvchi {user_id} ({user_data['name']}) {format_currency(user_data['bonus'])} bonusni yechmoqchi. Tasdiqlaysizmi?",
-                    reply_markup=InlineKeyboardMarkup([
-                        [InlineKeyboardButton("Tasdiqlash", callback_data=f"approve_bonus_{user_id}"),
-                         InlineKeyboardButton("Rad etish", callback_data=f"reject_bonus_{user_id}")]
-                    ])
-                )
-                await update.message.reply_text("Bonusni yechish so'rovi adminga yuborildi.")
-            except (TimedOut, NetworkError) as e:
-                logger.error(f"TimedOut in handle_message (bonus request): {e}")
-                await update.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
+            await context.bot.send_message(
+                chat_id=ADMINS[0],
+                text=f"Foydalanuvchi {user_id} ({user_data['name']}) {format_currency(user_data['bonus'])} bonusni yechmoqchi. Tasdiqlaysizmi?",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Tasdiqlash", callback_data=f"approve_bonus_{user_id}"),
+                     InlineKeyboardButton("Rad etish", callback_data=f"reject_bonus_{user_id}")]
+                ])
+            )
+            await update.message.reply_text("Bonusni yechish so'rovi adminga yuborildi.")
         elif text == "Admin bilan bog'lanish":
             await update.message.reply_text(f"Admin bilan bog'lanish uchun: [{ADMINS[0]}](tg://user?id={ADMINS[0]})", parse_mode="Markdown")
         elif user_id in USER_STATE:
@@ -430,9 +440,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     del USER_STATE[user_id]
                 except ValueError:
                     await update.message.reply_text("Iltimos, to'g'ri miqdor kiriting (butun son).")
-                except (TimedOut, NetworkError) as e:
-                    logger.error(f"TimedOut in handle_message (quantity): {e}")
-                    await update.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
             elif state["step"] == "order_location":
                 await update.message.reply_text("Iltimos, buyurtma yetkazib beriladigan lokatsiyani yuboring:", reply_markup=ReplyKeyboardMarkup([[KeyboardButton("Lokatsiyani yuborish", request_location=True)]], resize_keyboard=True))
             elif state["step"] == "edit_name":
@@ -456,19 +463,22 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "phone": USER_STATE[user_id]["phone"],
                         "address": USER_STATE[user_id]["address"],
                         "role": text,
-                        "bonus": USER_STATE[user_id].get("bonus", 0)
+                        "bonus": USER_STATE[user_id]["bonus"],
+                        "edit_request": f"{USER_STATE[user_id]['name']}, {USER_STATE[user_id]['phone']}, {USER_STATE[user_id]['address']}, {text}",
+                        "edit_confirmed": "No"
                     }
-                    update_user_data(user_id, data)
+                    update_user_data(user_id, data, edit_request=True)
+                    await context.bot.send_message(
+                        chat_id=ADMINS[0],
+                        text=f"Foydalanuvchi {user_id} ({user_data['name']}) shaxsiy ma'lumotlarini o'zgartirmoqchi:\n"
+                             f"Yangi ma'lumotlar: {data['edit_request']}\nTasdiqlaysizmi?",
+                        reply_markup=InlineKeyboardMarkup([
+                            [InlineKeyboardButton("Tasdiqlash", callback_data=f"approve_edit_{user_id}"),
+                             InlineKeyboardButton("Rad etish", callback_data=f"reject_edit_{user_id}")]
+                        ])
+                    )
+                    await update.message.reply_text("Ma'lumotlarni o'zgartirish so'rovi adminga yuborildi. Tasdiqlanishini kuting.")
                     del USER_STATE[user_id]
-                    keyboard = [
-                        ["Shaxsiy ma'lumotlarni o'zgartirish", "Mahsulot buyurtma qilish"],
-                        ["Mening buyurtmalarim"]
-                    ]
-                    if text == "Usta":
-                        keyboard.append(["Umumiy Bonus", "Bonusni yechish"])
-                    keyboard.append(["Admin bilan bog'lanish"])
-                    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                    await update.message.reply_text("Ma'lumotlaringiz yangilandi!", reply_markup=reply_markup)
                 else:
                     await update.message.reply_text("Iltimos, quyidagi variantlardan birini tanlang: Do'kon egasi, Qurilish kompaniyasi, Uy egasi, Usta")
     except (TimedOut, NetworkError) as e:
@@ -540,6 +550,7 @@ async def handle_location(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("Faoliyat turini tanlang:", reply_markup=reply_markup)
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Foydalanuvchi callback so'rovlarini qayta ishlash"""
     query = update.callback_query
     user_id = str(query.from_user.id)
     data = query.data
@@ -581,6 +592,22 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.message.reply_text("Xato yuz berdi, iltimos, keyinroq urinib ko'ring.")
         await query.answer()
 
+async def handle_admin_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin uchun mahsulotlar ro'yxatini ko'rsatish"""
+    query = update.callback_query
+    user_id = str(query.from_user.id)
+    group_name = USER_SELECTED_GROUP.get(user_id, "")
+    products = get_products(group_name)
+    if not products:
+        await query.message.reply_text(f"{group_name} guruhida mahsulotlar yo'q.")
+        await query.answer()
+        return
+    text = f"{group_name} guruhidagi mahsulotlar:\n"
+    for p in products:
+        text += f"{p['name']}: {p['quantity']} dona, Bonus: {p['bonus_percent']}%\n"
+    await query.message.reply_text(text)
+    await query.answer()
+
 async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin callback so'rovlarini qayta ishlash"""
     query = update.callback_query
@@ -597,10 +624,10 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 logger.error(f"confirm_order: Buyurtma topilmadi: Row={order_row}")
                 await query.answer()
                 return
-            record = records[order_row - 2]  # To'g'ri indeks
+            record = records[order_row - 2]
             user_id = str(record["Haridor ID"])
             bonus_amount = float(record["Bonus summasi"] or 0)
-            BUYURTMALAR_SHEET.update(f"I{order_row}", "Confirmed")
+            BUYURTMALAR_SHEET.update(f"J{order_row}", "Yes")
             
             if bonus_amount > 0:
                 if not update_bonus(user_id, bonus_amount):
@@ -636,9 +663,9 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 logger.error(f"reject_order: Buyurtma topilmadi: Row={order_row}")
                 await query.answer()
                 return
-            record = records[order_row - 2]  # To'g'ri indeks
+            record = records[order_row - 2]
             user_id = str(record["Haridor ID"])
-            BUYURTMALAR_SHEET.update(f"I{order_row}", "Rejected")
+            BUYURTMALAR_SHEET.update(f"J{order_row}", "Rejected")
             await context.bot.send_message(
                 chat_id=user_id,
                 text="Sizning buyurtmangiz rad etildi. Qo'shimcha ma'lumot uchun admin bilan bog'laning."
@@ -692,10 +719,27 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 logger.error(f"approve_edit: Haridor topilmadi: ID={user_id}")
                 await query.answer()
                 return
-            USER_STATE[user_id] = {"step": "edit_name", "bonus": user_data["bonus"]}
+            new_data = user_data["edit_request"].split(", ")
+            if len(new_data) != 4:
+                await query.message.reply_text("Xato: Tahrir so‘rovi noto‘g‘ri formatda!")
+                logger.error(f"approve_edit: Noto‘g‘ri tahrir so‘rovi: {user_data['edit_request']}")
+                await query.answer()
+                return
+            user_data.update({
+                "name": new_data[0],
+                "phone": new_data[1],
+                "address": new_data[2],
+                "role": new_data[3],
+                "edit_confirmed": "Yes"
+            })
+            if not update_user_data(user_id, user_data):
+                await query.message.reply_text("Xato: Ma'lumotlar yangilanmadi!")
+                logger.error(f"approve_edit: Ma'lumotlar yangilanmadi: ID={user_id}")
+                await query.answer()
+                return
             await context.bot.send_message(
                 chat_id=user_id,
-                text=f"Ma'lumotlaringizni o'zgartirish tasdiqlandi. Joriy ism: {user_data['name']}\nYangi ismingizni kiriting:"
+                text="Sizning shaxsiy ma'lumotlaringiz yangilandi!"
             )
             await query.message.reply_text(f"Ma'lumotlarni o'zgartirish tasdiqlandi.")
             logger.info(f"Ma'lumotlarni o'zgartirish tasdiqlandi: ID={user_id}")
@@ -706,6 +750,13 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             if not user_data:
                 await query.message.reply_text("Xato: Foydalanuvchi topilmadi!")
                 logger.error(f"reject_edit: Haridor topilmadi: ID={user_id}")
+                await query.answer()
+                return
+            user_data["edit_request"] = ""
+            user_data["edit_confirmed"] = "Rejected"
+            if not update_user_data(user_id, user_data):
+                await query.message.reply_text("Xato: Ma'lumotlar yangilanmadi!")
+                logger.error(f"reject_edit: Ma'lumotlar yangilanmadi: ID={user_id}")
                 await query.answer()
                 return
             await context.bot.send_message(
@@ -730,13 +781,15 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 "old_group_name": group_name,
                 "current_name": product["name"],
                 "current_price": product["price"],
-                "current_bonus_percent": product["bonus_percent"]
+                "current_bonus_percent": product["bonus_percent"],
+                "current_quantity": product["quantity"]
             }
             await query.message.reply_text(
                 f"Joriy mahsulot: {product_name} ({group_name})\n"
                 f"Nom: {product['name']}\n"
                 f"Narx: {format_currency(product['price'])}\n"
                 f"Bonus foizi: {product['bonus_percent']}%\n"
+                f"Miqdori: {product['quantity']} dona\n"
                 f"Yangi nom kiriting (yoki o'zgartirmaslik uchun joriy nomni qaytaring):"
             )
             logger.info(f"Admin {user_id} mahsulotni tahrirlashni boshladi: {product_name} ({group_name})")
@@ -760,6 +813,9 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             await query.message.reply_text(f"{group_name} guruhiga yangi mahsulot nomini kiriting:")
             logger.info(f"Admin {user_id} mahsulot qo'shishni boshladi: Guruh={group_name}")
             await query.answer()
+        elif data.startswith("group_") and user_id in ADMINS:
+            USER_SELECTED_GROUP[user_id] = data[len("group_"):]
+            await handle_admin_products(update, context)
     except (TimedOut, NetworkError) as e:
         logger.error(f"TimedOut in handle_admin_callback: {e}")
         await query.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
@@ -830,9 +886,7 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
             logger.info(f"Admin {user_id} holati: {state['step']}, kiritilgan matn: {text}")
             if state["step"] == "group_name":
                 try:
-                    MAHSULOTLAR_SHEET.append_row([text, "", 0, 0])
-                    global GROUP_CACHE
-                    GROUP_CACHE = None  # Guruhlar keshini tozalash
+                    save_group(text)
                     await update.message.reply_text(f"Guruh qo'shildi: {text}")
                     logger.info(f"Admin {user_id} yangi guruh qo'shdi: {text}")
                     del USER_STATE[user_id]
@@ -865,11 +919,26 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await update.message.reply_text("Iltimos, 0 yoki undan katta foiz kiriting.")
                         logger.warning(f"Admin {user_id} noto'g'ri bonus foizi kiritdi: {text}")
                         return
+                    USER_STATE[user_id]["product_bonus"] = bonus_percent
+                    USER_STATE[user_id]["step"] = "product_quantity"
+                    await update.message.reply_text("Mahsulot miqdorini kiriting (dona):")
+                    logger.info(f"Admin {user_id} bonus foizini kiritdi: {bonus_percent}")
+                except ValueError:
+                    await update.message.reply_text("Iltimos, to'g'ri foiz kiriting (masalan, 12.5).")
+                    logger.warning(f"Admin {user_id} noto'g'ri bonus foizi formati kiritdi: {text}")
+            elif state["step"] == "product_quantity":
+                try:
+                    quantity = float(text)
+                    if quantity < 0:
+                        await update.message.reply_text("Iltimos, 0 yoki undan katta miqdor kiriting.")
+                        logger.warning(f"Admin {user_id} noto'g'ri miqdor kiritdi: {text}")
+                        return
                     data = {
                         "group_name": USER_SELECTED_GROUP.get(user_id, ""),
                         "name": USER_STATE[user_id]["product_name"],
                         "price": USER_STATE[user_id]["product_price"],
-                        "bonus_percent": bonus_percent
+                        "bonus_percent": USER_STATE[user_id]["product_bonus"],
+                        "quantity": quantity
                     }
                     save_product(data)
                     del USER_STATE[user_id]
@@ -877,8 +946,8 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text(f"Mahsulot qo'shildi: {data['name']} ({data['group_name']})")
                     logger.info(f"Admin {user_id} yangi mahsulot qo'shdi: {data['name']} ({data['group_name']})")
                 except ValueError:
-                    await update.message.reply_text("Iltimos, to'g'ri foiz kiriting (masalan, 12.5).")
-                    logger.warning(f"Admin {user_id} noto'g'ri bonus foizi formati kiritdi: {text}")
+                    await update.message.reply_text("Iltimos, to'g'ri miqdor kiriting (masalan, 50).")
+                    logger.warning(f"Admin {user_id} noto'g'ri miqdor formati kiritdi: {text}")
                 except Exception as e:
                     await update.message.reply_text("Mahsulot qo'shishda xato yuz berdi.")
                     logger.error(f"Mahsulot qo'shish xatosi: {e}")
@@ -893,6 +962,12 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             continue
                         bonus_text = f"Bonus summasi: {format_currency(order['bonus_sum'])}" if user_data["role"] == "Usta" else ""
                         maps_link = f"https://maps.google.com/?q={order['address'].split('Lat: ')[1].split(', Lon: ')[0]},{order['address'].split(', Lon: ')[1]}" if "Lat:" in order["address"] else order["address"]
+                        buttons = []
+                        if order["confirmed"] == "No":
+                            buttons = [
+                                [InlineKeyboardButton("Tasdiqlash", callback_data=f"confirm_order_{order['row']}"),
+                                 InlineKeyboardButton("Rad etish", callback_data=f"reject_order_{order['row']}")]
+                            ]
                         await update.message.reply_text(
                             f"Buyurtma:\n"
                             f"Haridor ID: {order['user_id']}\n"
@@ -903,12 +978,10 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                             f"Sana: {order['date']}\n"
                             f"Mahsulotlar:\n{order['cart_text']}\n"
                             f"Umumiy summa: {format_currency(order['total_sum'])}\n"
-                            f"{bonus_text}",
+                            f"{bonus_text}\n"
+                            f"Holat: {'Tasdiqlangan' if order['confirmed'] == 'Yes' else 'Tasdiqlanmagan'}",
                             parse_mode="Markdown",
-                            reply_markup=InlineKeyboardMarkup([
-                                [InlineKeyboardButton("Tasdiqlash", callback_data=f"confirm_order_{order['row']}"),
-                                 InlineKeyboardButton("Rad etish", callback_data=f"reject_order_{order['row']}")]
-                            ])
+                            reply_markup=InlineKeyboardMarkup(buttons)
                         )
                     logger.info(f"Admin {user_id} sanadagi buyurtmalarni oldi: {text}")
                 else:
@@ -953,11 +1026,30 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         await update.message.reply_text("Iltimos, 0 yoki undan katta foiz kiriting.")
                         logger.warning(f"Admin {user_id} noto'g'ri bonus foizi kiritdi: {text}")
                         return
+                    USER_STATE[user_id]["new_product_bonus"] = bonus_percent
+                    USER_STATE[user_id]["step"] = "edit_product_quantity"
+                    await update.message.reply_text(
+                        f"Yangi bonus foizi saqlandi: {bonus_percent}%\n"
+                        f"Joriy miqdor: {state['current_quantity']} dona\n"
+                        f"Yangi miqdor kiriting (yoki o'zgartirmaslik uchun joriy miqdorni qaytaring):"
+                    )
+                    logger.info(f"Admin {user_id} yangi bonus foizi kiritdi: {bonus_percent}")
+                except ValueError:
+                    await update.message.reply_text("Iltimos, to'g'ri foiz kiriting (masalan, 15).")
+                    logger.warning(f"Admin {user_id} noto'g'ri bonus foizi formati kiritdi: {text}")
+            elif state["step"] == "edit_product_quantity":
+                try:
+                    quantity = float(text)
+                    if quantity < 0:
+                        await update.message.reply_text("Iltimos, 0 yoki undan katta miqdor kiriting.")
+                        logger.warning(f"Admin {user_id} noto'g'ri miqdor kiritdi: {text}")
+                        return
                     data = {
                         "group_name": USER_STATE[user_id]["old_group_name"],
                         "name": USER_STATE[user_id]["new_product_name"],
                         "price": USER_STATE[user_id]["new_product_price"],
-                        "bonus_percent": bonus_percent
+                        "bonus_percent": USER_STATE[user_id]["new_product_bonus"],
+                        "quantity": quantity
                     }
                     if update_product(USER_STATE[user_id]["old_product_name"], USER_STATE[user_id]["old_group_name"], data):
                         await update.message.reply_text(f"Mahsulot ma'lumotlari muvaffaqiyatli o'zgartirildi: {data['name']} ({data['group_name']})")
@@ -968,8 +1060,8 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     del USER_STATE[user_id]
                     del USER_SELECTED_GROUP[user_id]
                 except ValueError:
-                    await update.message.reply_text("Iltimos, to'g'ri foiz kiriting (masalan, 15).")
-                    logger.warning(f"Admin {user_id} noto'g'ri bonus foizi formati kiritdi: {text}")
+                    await update.message.reply_text("Iltimos, to'g'ri miqdor kiriting (masalan, 50).")
+                    logger.warning(f"Admin {user_id} noto'g'ri miqdor formati kiritdi: {text}")
                 except Exception as e:
                     await update.message.reply_text("Mahsulot yangilashda xato yuz berdi.")
                     logger.error(f"Mahsulot yangilash xatosi: {e}")
@@ -987,7 +1079,6 @@ async def get_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Foydalanuvchi ID'sini ko'rsatish"""
     await update.message.reply_text(f"Sizning ID: {update.effective_user.id}")
 
-# Oddiy HTTP server Render uchun port ochish
 class DummyHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -995,17 +1086,17 @@ class DummyHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b"Bot is running")
     
-    def do_POST(self):  # Webhook so'rovlarini qayta ishlash uchun
+    def do_POST(self):
         self.send_response(200)
         self.end_headers()
     
-    def do_HEAD(self):  # Render sog'liq tekshiruvi uchun
+    def do_HEAD(self):
         self.send_response(200)
         self.send_header("Content-type", "text/plain")
         self.end_headers()
 
 def run_http_server():
-    server_address = ('0.0.0.0', 8080)  # Render uchun 8080 port
+    server_address = ('0.0.0.0', 8080)
     httpd = HTTPServer(server_address, DummyHandler)
     httpd.serve_forever()
 
@@ -1021,7 +1112,7 @@ def main():
     """Botni ishga tushirish"""
     init_sheets()
     request = HTTPXRequest(
-        connection_pool_size=10,  # Resurslarni tejash uchun kamaytirildi
+        connection_pool_size=10,
         read_timeout=120.0,
         write_timeout=120.0,
         connect_timeout=120.0,
@@ -1053,24 +1144,21 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.LOCATION, handle_location))
     application.add_handler(CallbackQueryHandler(handle_callback_query, pattern="^(group_|product_|confirm_cart)"))
-    application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|select_group_)"))
+    application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|select_group_|group_)"))
     
-    # Webhookni o'chirish
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     loop.run_until_complete(clear_webhook(application.bot))
     
-    # HTTP serverni alohida thread'da ishga tushirish
     http_thread = threading.Thread(target=run_http_server, daemon=True)
     http_thread.start()
     logger.info("HTTP server started on port 8080")
     
-    # Botni polling rejimida ishga tushirish
     application.run_polling(
-        poll_interval=3.0,        # Optimal interval
-        timeout=120,              # Vaqt chegarasi
+        poll_interval=3.0,
+        timeout=120,
         drop_pending_updates=True,
-        bootstrap_retries=5       # Qayta urinishlar sonini oshirish
+        bootstrap_retries=5
     )
 
 if __name__ == "__main__":

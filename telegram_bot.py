@@ -113,7 +113,7 @@ def update_user_data(user_id, data, edit_request=False):
                     data["phone"],
                     data["address"],
                     data["role"],
-                    data.get("bonus", data.get('bonus', 0)),
+                    float(data.get("bonus", 0)),
                     data.get("edit_request", ""),
                     data.get("edit_confirmed", "")
                 ]
@@ -296,33 +296,28 @@ def update_bonus(user_id, bonus_amount):
         logger.error(f"Bonus yangilash xatosi: {e}")
         return False
 
-def get_orders_by_date(date):
-    """Sanadagi buyurtmalarni olish"""
+def get_all_orders():
+    """Barcha buyurtmalarni olish"""
     try:
-        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
-            logger.error(f"Invalid date format: {date}")
-            return []
         records = BUYURTMALAR_SHEET.get_all_records()
         orders = []
         for i, record in enumerate(records, start=2):
-            order_date = record["Sana"].split()[0]
-            if order_date == date:
-                orders.append({
-                    "row": i,
-                    "user_id": str(record["Haridor ID"]),
-                    "user_name": record["Buyurtmachi ismi"],
-                    "phone": record["Telefon"],
-                    "address": record["Manzil"],
-                    "date": record["Sana"],
-                    "group_name": record["Guruh nomi"],
-                    "cart_text": record["Mahsulotlar"],
-                    "total_sum": float(record["Umumiy summa"]),
-                    "bonus_sum": float(record["Bonus summasi"] or 0),
-                    "confirmed": record["Confirmed"]
-                })
+            orders.append({
+                "row": i,
+                "user_id": str(record["Haridor ID"]),
+                "user_name": record["Buyurtmachi ismi"],
+                "phone": record["Telefon"],
+                "address": record["Manzil"],
+                "date": record["Sana"],
+                "group_name": record["Guruh nomi"],
+                "cart_text": record["Mahsulotlar"],
+                "total_sum": float(record["Umumiy summa"]),
+                "bonus_sum": float(record["Bonus summasi"] or 0),
+                "confirmed": record["Confirmed"]
+            })
         return orders
     except Exception as e:
-        logger.error(f"Buyurtmalar olish xatosi: {e}")
+        logger.error(f"Barcha buyurtmalarni olish xatosi: {e}")
         return []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -519,15 +514,6 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     del USER_STATE[user_id]
                 else:
                     await update.message.reply_text("Iltimos, quyidagi variantlardan birini tanlang: Do'kon egasi, Qurilish kompaniyasi, Uy egasi, Usta")
-            elif text == "/skip" and state["step"] == "edit_location":
-                USER_STATE[user_id]["address"] = state["current_address"]
-                USER_STATE[user_id]["step"] = "edit_role"
-                keyboard = [
-                    ["Do'kon egasi", "Qurilish kompaniyasi"],
-                    ["Uy egasi", "Usta"]
-                ]
-                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-                await update.message.reply_text(f"Joriy faoliyat turi: {state['current_role']}\nYangi faoliyat turini tanlang (yoki o'zgartirmaslik uchun joriy turni qaytaring):", reply_markup=reply_markup)
     except (TimedOut, NetworkError) as e:
         logger.error(f"TimedOut in handle_message: {e}")
         await update.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
@@ -781,6 +767,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 "phone": new_data[1].strip(),
                 "address": new_data[2].strip(),
                 "role": new_data[3].strip(),
+                "bonus": user_data["bonus"],  # Bonusni saqlab qolamiz
                 "edit_request": "",
                 "edit_confirmed": "Yes"
             })
@@ -791,7 +778,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 return
             await context.bot.send_message(
                 chat_id=user_id,
-                text="Sizning shaxsiy ma'lumotlaringiz yangilandi!"
+                text=f"Ma'lumotlaringiz yangilandi:\nIsm: {user_data['name']}\nTelefon: {user_data['phone']}\nManzil: {user_data['address']}\nFaoliyat turi: {user_data['role']}"
             )
             await query.edit_message_text(
                 text=query.message.text + "\n\n**Holati: Tasdiqlangan**",
@@ -799,7 +786,7 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 reply_markup=None
             )
             await query.message.reply_text(f"Ma'lumotlarni o'zgartirish tasdiqlandi.")
-            logger.info(f"Ma'lumotlarni o'zgartirish tasdiqlandi: ID={user_id}")
+            logger.info(f"Ma'lumotlarni o'zgartirish tasdiqlandi: ID={user_id}, Yangi ma'lumotlar: {user_data}")
             await query.answer()
         elif data.startswith("reject_edit_"):
             user_id = data[len("reject_edit_"): ]
@@ -949,9 +936,41 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(text, parse_mode="Markdown")
                 logger.info(f"Admin {user_id} mahsulot ro'yxatini oldi")
         elif text == "Buyurtmalar ro'yxati":
-            USER_STATE[user_id] = {"step": "order_date"}
-            await update.message.reply_text("Sanani kiriting (YYYY-MM-DD):")
-            logger.info(f"Admin {user_id} buyurtmalar ro'yxatini so'radi")
+            orders = get_all_orders()
+            if orders:
+                for order in orders:
+                    user_data = get_user_data(order["user_id"])
+                    if not user_data:
+                        await update.message.reply_text(f"Buyurtma uchun foydalanuvchi topilmadi: {order['user_name']}")
+                        logger.error(f"Buyurtmalar ro'yxati: Haridor topilmadi: ID={order['user_id']}")
+                        continue
+                    bonus_text = f"Bonus summasi: {format_currency(order['bonus_sum'])}" if user_data["role"] == "Usta" else ""
+                    maps_link = f"https://maps.google.com/?q={order['address'].split('Lat:')[1].split(' Lon:')[0]},{order['address'].split(' Lon:')[1]}" if "Lat:" in order["address"] else order["address"]
+                    buttons = []
+                    if order["confirmed"] == "No":
+                        buttons = [
+                            [InlineKeyboardButton("Tasdiqlash", callback_data=f"confirm_order_{order['user_id']}"),
+                             InlineKeyboardButton("Rad etish", callback_data=f"reject_order_{order['user_id']}")]
+                        ]
+                    await update.message.reply_text(
+                        f"Buyurtma:\n"
+                        f"Haridor ID: {order['user_id']}\n"
+                        f"Haridor: [{order['user_name']}](tg://user?id={order['user_id']})\n"
+                        f"Telefon: {order['phone']}\n"
+                        f"Manzil: [{order['address']}]({maps_link})\n"
+                        f"Guruh: {order['group_name']}\n"
+                        f"Sana: {order['date']}\n"
+                        f"Mahsulotlar:\n{order['cart_text']}\n"
+                        f"Umumiy summa: {format_currency(order['total_sum'])}\n"
+                        f"{bonus_text}\n"
+                        f"Holat: {'Tasdiqlangan' if order['confirmed'] == 'Yes' else 'Rad etildi' if order['confirmed'] == 'Rejected' else 'Tasdiqlanmagan'}",
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup(buttons)
+                    )
+                logger.info(f"Admin {user_id} barcha buyurtmalarni oldi")
+            else:
+                await update.message.reply_text("Buyurtmalar yo'q.")
+                logger.info(f"Admin {user_id} buyurtmalar ro'yxatini so'radi, lekin buyurtmalar yo'q")
         elif text == "Haridorlar ro'yxati":
             users = HARIDORLAR_SHEET.get_all_records()
             if users:
@@ -1041,43 +1060,6 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     await update.message.reply_text("Mahsulot qo'shishda xato yuz berdi.")
                     logger.error(f"Mahsulot qo'shish xatosi: {e}")
-            elif state["step"] == "order_date":
-                orders = get_orders_by_date(text)
-                if orders:
-                    for order in orders:
-                        user_data = get_user_data(order["user_id"])
-                        if not user_data:
-                            await update.message.reply_text(f"Buyurtma uchun foydalanuvchi topilmadi: {order['user_name']}")
-                            logger.error(f"order_date: Haridor topilmadi: ID={order['user_id']}")
-                            continue
-                        bonus_text = f"Bonus summasi: {format_currency(order['bonus_sum'])}" if user_data["role"] == "Usta" else ""
-                        maps_link = f"https://maps.google.com/?q={order['address'].split('Lat:')[1].split(' Lon:')[0]},{order['address'].split(' Lon:')[1]}" if "Lat:" in order["address"] else order["address"]
-                        buttons = []
-                        if order["confirmed"] == "No":
-                            buttons = [
-                                [InlineKeyboardButton("Tasdiqlash", callback_data=f"confirm_order_{order['user_id']}"),
-                                 InlineKeyboardButton("Rad etish", callback_data=f"reject_order_{order['user_id']}")]
-                            ]
-                        await update.message.reply_text(
-                            f"Buyurtma:\n"
-                            f"Haridor ID: {order['user_id']}\n"
-                            f"Haridor: [{order['user_name']}](tg://user?id={order['user_id']})\n"
-                            f"Telefon: {order['phone']}\n"
-                            f"Manzil: [{order['address']}]({maps_link})\n"
-                            f"Guruh: {order['group_name']}\n"
-                            f"Sana: {order['date']}\n"
-                            f"Mahsulotlar:\n{order['cart_text']}\n"
-                            f"Umumiy summa: {format_currency(order['total_sum'])}\n"
-                            f"{bonus_text}\n"
-                            f"Holat: {'Tasdiqlangan' if order['confirmed'] == 'Yes' else 'Rad etildi' if order['confirmed'] == 'Rejected' else 'Tasdiqlanmagan'}",
-                            parse_mode="Markdown",
-                            reply_markup=InlineKeyboardMarkup(buttons)
-                        )
-                    logger.info(f"Admin {user_id} sanadagi buyurtmalarni oldi: {text}")
-                else:
-                    await update.message.reply_text("Bu sanada buyurtmalar yo'q.")
-                    logger.info(f"Admin {user_id} sanada buyurtmalar yo'q: {text}")
-                del USER_STATE[user_id]
             elif state["step"] == "edit_product_name":
                 if not text.strip():
                     await update.message.reply_text("Iltimos, mahsulot nomini kiriting (bo'sh bo'lmasligi kerak).")

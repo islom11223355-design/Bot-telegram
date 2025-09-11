@@ -75,7 +75,7 @@ def init_sheets():
             current_headers = HARIDORLAR_SHEET.row_values(1)
             if current_headers != haridorlar_headers:
                 logger.warning(f"Haridorlar varag‘i sarlavhalari noto‘g‘ri: {current_headers}")
-                HARIDORLAR_SHEET.update("A1:H1", [haridorlar_headers])
+                HARIDORLAR_SHEET.update(range_name="A1:H1", values=[haridorlar_headers])
 
         # Mahsulotlar varag‘i
         mahsulotlar_headers = ["Guruh nomi", "Mahsulot nomi", "Narx", "Bonus foizi", "Miqdori"]
@@ -85,7 +85,7 @@ def init_sheets():
             current_headers = MAHSULOTLAR_SHEET.row_values(1)
             if current_headers != mahsulotlar_headers:
                 logger.warning(f"Mahsulotlar varag‘i sarlavhalari noto‘g‘ri: {current_headers}")
-                MAHSULOTLAR_SHEET.update("A1:E1", [mahsulotlar_headers])
+                MAHSULOTLAR_SHEET.update(range_name="A1:E1", values=[mahsulotlar_headers])
 
         # Buyurtmalar varag‘i
         buyurtmalar_headers = ["Haridor ID", "Buyurtmachi ismi", "Telefon", "Manzil", "Sana", "Guruh nomi", "Mahsulotlar", "Umumiy summa", "Bonus summasi", "Confirmed"]
@@ -95,7 +95,7 @@ def init_sheets():
             current_headers = BUYURTMALAR_SHEET.row_values(1)
             if current_headers != buyurtmalar_headers:
                 logger.warning(f"Buyurtmalar varag‘i sarlavhalari noto‘g‘ri: {current_headers}")
-                BUYURTMALAR_SHEET.update("A1:J1", [buyurtmalar_headers])
+                BUYURTMALAR_SHEET.update(range_name="A1:J1", values=[buyurtmalar_headers])
 
         # Guruhlar varag‘i
         guruylar_headers = ["Guruh Nomi"]
@@ -105,7 +105,7 @@ def init_sheets():
             current_headers = GURUHLAR_SHEET.row_values(1)
             if current_headers != guruylar_headers:
                 logger.warning(f"Guruhlar varag‘i sarlavhalari noto‘g‘ri: {current_headers}")
-                GURUHLAR_SHEET.update("A1:A1", [guruylar_headers])
+                GURUHLAR_SHEET.update(range_name="A1:A1", values=[guruylar_headers])
     except Exception as e:
         logger.error(f"Sheets init xatosi: {e}")
         raise
@@ -280,7 +280,6 @@ def save_group(group_name):
         logger.error(f"Guruh qo'shish xatosi: {e}")
 
 def save_order(user_id, cart, address, group_name):
-    """Buyurtmani Google Sheets'ga saqlash"""
     try:
         user_data = get_user_data(user_id)
         if not user_data:
@@ -1273,11 +1272,7 @@ def run_polling(app: Application):
     try:
         app.run_polling(
             allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
-            timeout=30,
-            read_timeout=30,
-            write_timeout=30,
-            connect_timeout=30
+            drop_pending_updates=True
         )
         logger.info("Bot polling rejimida ishga tushdi")
     except Exception as e:
@@ -1285,54 +1280,54 @@ def run_polling(app: Application):
         raise
 
 async def main():
-    """Botni ishga tushirish"""
     try:
-        # Google Sheets-ni boshlash
         init_sheets()
-
-        # HTTPXRequest bilan maxsus sozlamalar
-        request = HTTPXRequest(
-            connection_pool_size=20,
-            read_timeout=30.0,
-            write_timeout=30.0,
-            connect_timeout=30.0,
-            pool_timeout=30.0
-        )
-
-        # Botni yaratish
         app = (
             Application.builder()
             .token(BOT_TOKEN)
-            .request(request)
+            .get_updates_read_timeout(30.0)
+            .get_updates_write_timeout(30.0)
+            .get_updates_connect_timeout(30.0)
+            .get_updates_pool_timeout(30.0)
             .concurrent_updates(True)
             .build()
         )
-
-        # Webhookni tozalash
         await clear_webhook(app)
-
-        # Handlerlarni qo'shish
         app.add_handler(CommandHandler("start", start))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         app.add_handler(MessageHandler(filters.LOCATION, handle_location))
         app.add_handler(CallbackQueryHandler(handle_callback_query, pattern="^(group_|product_|confirm_cart)"))
         app.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|select_group_edit_|select_group_add_|group_)"))
         app.add_error_handler(error_handler)
-
-        # Botni polling rejimida ishga tushirish
         logger.info("Bot boshlanmoqda...")
-        run_polling(app)
-
+        await app.initialize()
+        await app.start()
+        await app.updater.start_polling(
+            allowed_updates=Update.ALL_TYPES,
+            drop_pending_updates=True
+        )
+        logger.info("Bot polling rejimida ishga tushdi")
+        await asyncio.Event().wait()
     except Conflict as e:
         logger.error(f"Botni ishga tushirishda konflikt: {e}")
         raise
     except Exception as e:
         logger.error(f"Botni ishga tushirishda xato: {e}", exc_info=True)
         raise
+    finally:
+        if 'app' in locals():
+            await app.stop()
+            await app.shutdown()
 
 if __name__ == "__main__":
     try:
-        asyncio.run(main())
+        import threading
+        threading.Thread(target=run_health_check_server, daemon=True).start()
+        loop = asyncio.get_event_loop()
+        if loop.is_running():
+            loop.create_task(main())
+        else:
+            loop.run_until_complete(main())
     except Exception as e:
         logger.error(f"Main funktsiyasida xato: {e}", exc_info=True)
         raise

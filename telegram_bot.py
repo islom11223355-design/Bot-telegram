@@ -12,7 +12,6 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, Keyboar
 from telegram.ext import Application, CommandHandler, MessageHandler, CallbackQueryHandler, filters, ContextTypes
 from telegram.request import HTTPXRequest
 from telegram.error import TimedOut, NetworkError, Conflict
-import uuid
 
 # Logging sozlamalari
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
@@ -113,7 +112,7 @@ def update_user_data(user_id, data, edit_request=False):
                     data["phone"],
                     data["address"],
                     data["role"],
-                    data.get("bonus", data.get('bonus', 0)),
+                    data.get("bonus", record.get("Bonus", 0)),
                     data.get("edit_request", ""),
                     data.get("edit_confirmed", "")
                 ]
@@ -261,7 +260,7 @@ def save_order(user_id, cart, address, group_name):
             user_data["name"],
             user_data["phone"],
             address,
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            datetime.now().strftime("%Y-%m-%d"),  # Faqat sana
             group_name,
             cart_text,
             total_sum,
@@ -284,8 +283,7 @@ def update_bonus(user_id, bonus_amount):
             if str(record["ID"]) == str(user_id):
                 current_bonus = float(record["Bonus"] or 0)
                 new_bonus = current_bonus + bonus_amount
-                # F ustuniga yangi bonusni yozish
-                HARIDORLAR_SHEET.update_cell(i, 6, new_bonus)  # 6-ustun F (Bonus)
+                HARIDORLAR_SHEET.update_cell(i, 6, new_bonus)  # F ustuni (Bonus)
                 if user_id in USER_CACHE:
                     USER_CACHE[user_id]["bonus"] = new_bonus
                 logger.info(f"Bonus yangilandi: ID={user_id}, Qo'shilgan={bonus_amount}, Umumiy={new_bonus}")
@@ -296,19 +294,14 @@ def update_bonus(user_id, bonus_amount):
         logger.error(f"Bonus yangilash xatosi: {e}")
         return False
 
-def get_orders_by_date(date):
-    """Sanadagi buyurtmalarni olish"""
+def get_orders_by_user(user_id):
+    """Foydalanuvchi bo'yicha buyurtmalarni olish"""
     try:
-        if not re.match(r"^\d{4}-\d{2}-\d{2}$", date):
-            logger.error(f"Invalid date format: {date}")
-            return []
         records = BUYURTMALAR_SHEET.get_all_records()
         orders = []
-        for i, record in enumerate(records, start=2):
-            order_date = record["Sana"].split()[0]
-            if order_date == date:
+        for record in records:
+            if str(record["Haridor ID"]) == str(user_id):
                 orders.append({
-                    "row": i,
                     "user_id": str(record["Haridor ID"]),
                     "user_name": record["Buyurtmachi ismi"],
                     "phone": record["Telefon"],
@@ -322,12 +315,38 @@ def get_orders_by_date(date):
                 })
         return orders
     except Exception as e:
-        logger.error(f"Buyurtmalar olish xatosi: {e}")
+        logger.error(f"Foydalanuvchi buyurtmalarini olish xatosi: {e}")
+        return []
+
+def get_all_orders():
+    """Barcha buyurtmalarni olish"""
+    try:
+        records = BUYURTMALAR_SHEET.get_all_records()
+        orders = []
+        for i, record in enumerate(records, start=2):
+            orders.append({
+                "row": i,
+                "user_id": str(record["Haridor ID"]),
+                "user_name": record["Buyurtmachi ismi"],
+                "phone": record["Telefon"],
+                "address": record["Manzil"],
+                "date": record["Sana"],
+                "group_name": record["Guruh nomi"],
+                "cart_text": record["Mahsulotlar"],
+                "total_sum": float(record["Umumiy summa"]),
+                "bonus_sum": float(record["Bonus summasi"] or 0),
+                "confirmed": record["Confirmed"]
+            })
+        return orders
+    except Exception as e:
+        logger.error(f"Barcha buyurtmalarni olish xatosi: {e}")
         return []
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Botni boshlash"""
     user_id = str(update.effective_user.id)
+    user_data = get_user_data(user_id)
+    
     if user_id in ADMINS:
         keyboard = [
             ["Yangi guruh qo'shish", "Mahsulot qo'shish"],
@@ -337,12 +356,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
         await update.message.reply_text("Xush kelibsiz, Admin! Quyidagi amallarni bajarishingiz mumkin:", reply_markup=reply_markup)
     else:
-        user_data = get_user_data(user_id)
-        if not user_data:
-            keyboard = [[KeyboardButton("Ma'lumotlaringizni saqlang")]]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            await update.message.reply_text("Iltimos, ma'lumotlaringizni saqlang.", reply_markup=reply_markup)
-        else:
+        if user_data:
             keyboard = [
                 ["Shaxsiy ma'lumotlarni o'zgartirish", "Mahsulot buyurtma qilish"],
                 ["Mening buyurtmalarim"]
@@ -352,6 +366,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append(["Admin bilan bog'lanish"])
             reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
             await update.message.reply_text(f"Xush kelibsiz, {user_data['name']}!", reply_markup=reply_markup)
+        else:
+            keyboard = [[KeyboardButton("Ma'lumotlaringizni saqlang")]]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            await update.message.reply_text("Iltimos, ma'lumotlaringizni saqlang.", reply_markup=reply_markup)
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Foydalanuvchi xabarlarini qayta ishlash"""
@@ -369,7 +387,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             USER_STATE[user_id] = {"step": "name"}
             await update.message.reply_text("Ismingizni kiriting:")
         elif text == "Shaxsiy ma'lumotlarni o'zgartirish" and user_data:
-            USER_STATE[user_id] = {"step": "edit_name", "bonus": user_data["bonus"], "current_name": user_data["name"], "current_phone": user_data["phone"], "current_address": user_data["address"], "current_role": user_data["role"]}
+            USER_STATE[user_id] = {
+                "step": "edit_name",
+                "bonus": user_data["bonus"],
+                "current_name": user_data["name"],
+                "current_phone": user_data["phone"],
+                "current_address": user_data["address"],
+                "current_role": user_data["role"]
+            }
             await update.message.reply_text(f"Joriy ism: {user_data['name']}\nYangi ismingizni kiriting (yoki o'zgartirmaslik uchun joriy ismni qaytaring):")
         elif text == "Mahsulot buyurtma qilish":
             CART[user_id] = []
@@ -381,21 +406,23 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_markup = InlineKeyboardMarkup(keyboard)
             await update.message.reply_text("Mahsulot buyurtma qilish uchun guruhni tanlang:", reply_markup=reply_markup)
         elif text == "Mening buyurtmalarim":
-            records = BUYURTMALAR_SHEET.get_all_records()
-            orders = []
-            for record in records:
-                if str(record["Haridor ID"]) == user_id:
-                    orders.append(
-                        f"Sana: {record['Sana']}\n"
-                        f"Guruh: {record['Guruh nomi']}\n"
-                        f"Mahsulotlar:\n{record['Mahsulotlar']}\n"
-                        f"Umumiy summa: {format_currency(record['Umumiy summa'])}\n"
-                        f"Holat: {'Tasdiqlangan' if record['Confirmed'] == 'Yes' else 'Rad etildi' if record['Confirmed'] == 'Rejected' else 'Tasdiqlanmagan'}"
-                    )
+            orders = get_orders_by_user(user_id)
             if orders:
-                await update.message.reply_text("\n\n".join(orders))
+                orders_text = []
+                for order in orders:
+                    bonus_text = f"Bonus summasi: {format_currency(order['bonus_sum'])}" if order["bonus_sum"] > 0 else ""
+                    orders_text.append(
+                        f"Sana: {order['date']}\n"
+                        f"Guruh: {order['group_name']}\n"
+                        f"Mahsulotlar:\n{order['cart_text']}\n"
+                        f"Umumiy summa: {format_currency(order['total_sum'])}\n"
+                        f"{bonus_text}\n"
+                        f"Holat: {'Tasdiqlangan' if order['confirmed'] == 'Yes' else 'Rad etildi' if order['confirmed'] == 'Rejected' else 'Tasdiqlanmagan'}"
+                    )
+                await update.message.reply_text("\n\n".join(orders_text))
             else:
                 await update.message.reply_text("Sizda buyurtmalar yo'q.")
+            logger.info(f"User {user_id} buyurtmalarini ko'rdi")
         elif text == "Umumiy Bonus" and user_data and user_data["role"] == "Usta":
             await update.message.reply_text(f"Sizning umumiy bonusingiz: {format_currency(user_data['bonus'])}")
         elif text == "Bonusni yechish" and user_data and user_data["role"] == "Usta":
@@ -770,36 +797,40 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 logger.error(f"approve_edit: Haridor topilmadi: ID={user_id}")
                 await query.answer()
                 return
-            new_data = user_data["edit_request"].split("|")
-            if len(new_data) != 4:
-                await query.message.reply_text("Xato: Tahrir so‘rovi noto‘g‘ri formatda!")
-                logger.error(f"approve_edit: Noto‘g‘ri tahrir so‘rovi: {user_data['edit_request']}")
-                await query.answer()
-                return
-            user_data.update({
-                "name": new_data[0].strip(),
-                "phone": new_data[1].strip(),
-                "address": new_data[2].strip(),
-                "role": new_data[3].strip(),
-                "edit_request": "",
-                "edit_confirmed": "Yes"
-            })
-            if not update_user_data(user_id, user_data):
-                await query.message.reply_text("Xato: Ma'lumotlar yangilanmadi!")
-                logger.error(f"approve_edit: Ma'lumotlar yangilanmadi: ID={user_id}")
-                await query.answer()
-                return
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="Sizning shaxsiy ma'lumotlaringiz yangilandi!"
-            )
-            await query.edit_message_text(
-                text=query.message.text + "\n\n**Holati: Tasdiqlangan**",
-                parse_mode="Markdown",
-                reply_markup=None
-            )
-            await query.message.reply_text(f"Ma'lumotlarni o'zgartirish tasdiqlandi.")
-            logger.info(f"Ma'lumotlarni o'zgartirish tasdiqlandi: ID={user_id}")
+            try:
+                new_data = user_data["edit_request"].split("|")
+                if len(new_data) != 4:
+                    await query.message.reply_text("Xato: Tahrir so‘rovi noto‘g‘ri formatda!")
+                    logger.error(f"approve_edit: Noto‘g‘ri tahrir so‘rovi: {user_data['edit_request']}")
+                    await query.answer()
+                    return
+                updated_data = {
+                    "name": new_data[0].strip(),
+                    "phone": new_data[1].strip(),
+                    "address": new_data[2].strip(),
+                    "role": new_data[3].strip(),
+                    "bonus": user_data["bonus"],
+                    "edit_request": "",
+                    "edit_confirmed": "Yes"
+                }
+                if update_user_data(user_id, updated_data):
+                    await context.bot.send_message(
+                        chat_id=user_id,
+                        text="Sizning shaxsiy ma'lumotlaringiz muvaffaqiyatli yangilandi!"
+                    )
+                    await query.edit_message_text(
+                        text=query.message.text + "\n\n**Holati: Tasdiqlangan**",
+                        parse_mode="Markdown",
+                        reply_markup=None
+                    )
+                    await query.message.reply_text(f"Ma'lumotlarni o'zgartirish tasdiqlandi.")
+                    logger.info(f"Ma'lumotlarni o'zgartirish tasdiqlandi: ID={user_id}")
+                else:
+                    await query.message.reply_text("Xato: Ma'lumotlar yangilanmadi!")
+                    logger.error(f"approve_edit: Ma'lumotlar yangilanmadi: ID={user_id}")
+            except Exception as e:
+                await query.message.reply_text("Xato: Ma'lumotlarni yangilashda xato yuz berdi!")
+                logger.error(f"approve_edit: Xato: {e}")
             await query.answer()
         elif data.startswith("reject_edit_"):
             user_id = data[len("reject_edit_"): ]
@@ -949,9 +980,41 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(text, parse_mode="Markdown")
                 logger.info(f"Admin {user_id} mahsulot ro'yxatini oldi")
         elif text == "Buyurtmalar ro'yxati":
-            USER_STATE[user_id] = {"step": "order_date"}
-            await update.message.reply_text("Sanani kiriting (YYYY-MM-DD):")
-            logger.info(f"Admin {user_id} buyurtmalar ro'yxatini so'radi")
+            orders = get_all_orders()
+            if orders:
+                for order in orders:
+                    user_data = get_user_data(order["user_id"])
+                    if not user_data:
+                        await update.message.reply_text(f"Buyurtma uchun foydalanuvchi topilmadi: {order['user_name']}")
+                        logger.error(f"Buyurtmalar ro'yxati: Haridor topilmadi: ID={order['user_id']}")
+                        continue
+                    bonus_text = f"Bonus summasi: {format_currency(order['bonus_sum'])}" if order["bonus_sum"] > 0 else ""
+                    maps_link = f"https://maps.google.com/?q={order['address'].split('Lat:')[1].split(' Lon:')[0]},{order['address'].split(' Lon:')[1]}" if "Lat:" in order["address"] else order["address"]
+                    buttons = []
+                    if order["confirmed"] == "No":
+                        buttons = [
+                            [InlineKeyboardButton("Tasdiqlash", callback_data=f"confirm_order_{order['user_id']}"),
+                             InlineKeyboardButton("Rad etish", callback_data=f"reject_order_{order['user_id']}")]
+                        ]
+                    await update.message.reply_text(
+                        f"Buyurtma:\n"
+                        f"Haridor ID: {order['user_id']}\n"
+                        f"Haridor: [{order['user_name']}](tg://user?id={order['user_id']})\n"
+                        f"Telefon: {order['phone']}\n"
+                        f"Manzil: [{order['address']}]({maps_link})\n"
+                        f"Guruh: {order['group_name']}\n"
+                        f"Sana: {order['date']}\n"
+                        f"Mahsulotlar:\n{order['cart_text']}\n"
+                        f"Umumiy summa: {format_currency(order['total_sum'])}\n"
+                        f"{bonus_text}\n"
+                        f"Holat: {'Tasdiqlangan' if order['confirmed'] == 'Yes' else 'Rad etildi' if order['confirmed'] == 'Rejected' else 'Tasdiqlanmagan'}",
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup(buttons)
+                    )
+                logger.info(f"Admin {user_id} barcha buyurtmalarni ko'rdi")
+            else:
+                await update.message.reply_text("Hozirda buyurtmalar yo'q.")
+                logger.info(f"Admin {user_id} buyurtmalar ro'yxatini so'radi, lekin buyurtmalar yo'q")
         elif text == "Haridorlar ro'yxati":
             users = HARIDORLAR_SHEET.get_all_records()
             if users:
@@ -1041,43 +1104,6 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except Exception as e:
                     await update.message.reply_text("Mahsulot qo'shishda xato yuz berdi.")
                     logger.error(f"Mahsulot qo'shish xatosi: {e}")
-            elif state["step"] == "order_date":
-                orders = get_orders_by_date(text)
-                if orders:
-                    for order in orders:
-                        user_data = get_user_data(order["user_id"])
-                        if not user_data:
-                            await update.message.reply_text(f"Buyurtma uchun foydalanuvchi topilmadi: {order['user_name']}")
-                            logger.error(f"order_date: Haridor topilmadi: ID={order['user_id']}")
-                            continue
-                        bonus_text = f"Bonus summasi: {format_currency(order['bonus_sum'])}" if user_data["role"] == "Usta" else ""
-                        maps_link = f"https://maps.google.com/?q={order['address'].split('Lat:')[1].split(' Lon:')[0]},{order['address'].split(' Lon:')[1]}" if "Lat:" in order["address"] else order["address"]
-                        buttons = []
-                        if order["confirmed"] == "No":
-                            buttons = [
-                                [InlineKeyboardButton("Tasdiqlash", callback_data=f"confirm_order_{order['user_id']}"),
-                                 InlineKeyboardButton("Rad etish", callback_data=f"reject_order_{order['user_id']}")]
-                            ]
-                        await update.message.reply_text(
-                            f"Buyurtma:\n"
-                            f"Haridor ID: {order['user_id']}\n"
-                            f"Haridor: [{order['user_name']}](tg://user?id={order['user_id']})\n"
-                            f"Telefon: {order['phone']}\n"
-                            f"Manzil: [{order['address']}]({maps_link})\n"
-                            f"Guruh: {order['group_name']}\n"
-                            f"Sana: {order['date']}\n"
-                            f"Mahsulotlar:\n{order['cart_text']}\n"
-                            f"Umumiy summa: {format_currency(order['total_sum'])}\n"
-                            f"{bonus_text}\n"
-                            f"Holat: {'Tasdiqlangan' if order['confirmed'] == 'Yes' else 'Rad etildi' if order['confirmed'] == 'Rejected' else 'Tasdiqlanmagan'}",
-                            parse_mode="Markdown",
-                            reply_markup=InlineKeyboardMarkup(buttons)
-                        )
-                    logger.info(f"Admin {user_id} sanadagi buyurtmalarni oldi: {text}")
-                else:
-                    await update.message.reply_text("Bu sanada buyurtmalar yo'q.")
-                    logger.info(f"Admin {user_id} sanada buyurtmalar yo'q: {text}")
-                del USER_STATE[user_id]
             elif state["step"] == "edit_product_name":
                 if not text.strip():
                     await update.message.reply_text("Iltimos, mahsulot nomini kiriting (bo'sh bo'lmasligi kerak).")
@@ -1245,14 +1271,10 @@ def main():
         http_thread = threading.Thread(target=run_http_server, daemon=True)
         http_thread.start()
         
-        application.run_polling(
-            poll_interval=3.0,
-            timeout=120,
-            drop_pending_updates=True,
-            bootstrap_retries=5
-        )
+        logger.info("Bot polling rejimida ishga tushdi")
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
     except Exception as e:
-        logger.error(f"Main function error: {e}", exc_info=True)
+        logger.error(f"Botni ishga tushirishda xato: {e}", exc_info=True)
         raise
 
 if __name__ == "__main__":

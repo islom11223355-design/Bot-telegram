@@ -1277,14 +1277,6 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text("Iltimos, to'g'ri miqdor kiriting (masalan, 50).")
                     logger.warning(f"Admin {user_id} noto'g'ri miqdor formati kiritdi: {text}")
 
-async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    try:
-        logger.error(f"Update {update} caused error {context.error}", exc_info=True)
-        if update:
-            await update.message.reply_text("Xato yuz berdi, iltimos, keyinroq urinib ko'ring yoki admin bilan bog'laning.")
-    except Exception as e:
-        logger.error(f"Error in error_handler: {e}", exc_info=True)
-
 class HealthCheckHandler(BaseHTTPRequestHandler):
     """Render platformasi uchun /health endpointi"""
     def do_GET(self):
@@ -1316,7 +1308,6 @@ def main():
         application.add_handler(MessageHandler(filters.LOCATION, handle_location))
         application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|delete_product_|select_group_edit_|select_group_add_|delete_group_)"))
         application.add_handler(CallbackQueryHandler(handle_callback_query))
-        application.add_error_handler(error_handler)
 
         threading.Thread(target=run_health_check_server, daemon=True).start()
 

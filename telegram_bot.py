@@ -1010,273 +1010,272 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     logger.info(f"Admin {user_id} xabari: {text}")
 
-    if text == "Yangi guruh qo'shish":
-        USER_STATE[user_id] = {"step": "group_name"}
-        await update.message.reply_text("Yangi guruh nomini kiriting:")
-        logger.info(f"Admin {user_id} guruh qo'shishni boshladi")
-    elif text == "Mahsulot qo'shish":
-        groups = get_groups()
-        if not groups:
-            await update.message.reply_text("Hozirda guruhlar mavjud emas. Avval guruh qo'shing.")
-            logger.info(f"Admin {user_id} mahsulot qo'shishni so'radi, lekin guruhlar yo'q")
-            return
-        keyboard = [[InlineKeyboardButton(group, callback_data=f"select_group_add_{group}")] for group in groups]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("Mahsulot qo'shish uchun guruhni tanlang:", reply_markup=reply_markup)
-        logger.info(f"Admin {user_id} mahsulot qo'shish uchun guruh tanlashni boshladi")
-    elif text == "Mahsulotlar ma'lumotlarini o'zgartirish":
-        groups = get_groups()
-        if not groups:
-            await update.message.reply_text("Hozirda guruhlar mavjud emas.")
-            logger.info(f"Admin {user_id} mahsulot o'zgartirishni so'radi, lekin guruhlar yo'q")
-            return
-        keyboard = [[InlineKeyboardButton(group, callback_data=f"select_group_edit_{group}")] for group in groups]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("Tahrirlamoqchi bo'lgan mahsulot guruhini tanlang:", reply_markup=reply_markup)
-        logger.info(f"Admin {user_id} mahsulot o'zgartirish uchun guruh tanlashni boshladi")
-    elif text == "Mahsulot ro'yxati":
-        groups = get_groups()
-        if not groups:
-            await update.message.reply_text("Hozirda guruhlar mavjud emas.")
-            logger.info(f"Admin {user_id} mahsulot ro'yxatini so'radi, lekin guruhlar yo'q")
-            return
-        text = "Mahsulotlar ro'yxati:\n\n"
-        for group in groups:
-            products = get_products(group)
-            if products:
-                text += f"**{group}**:\n"
-                for p in products:
-                    text += f"  • {p['name']}: {p['quantity']} dona, Narx: {format_currency(p['price'])}, Bonus: {p['bonus_percent']}%\n"
-                text += "\n"
-        if text == "Mahsulotlar ro'yxati:\n\n":
-            await update.message.reply_text("Hozirda mahsulotlar mavjud emas.")
-            logger.info(f"Admin {user_id} mahsulot ro'yxatini so'radi, lekin mahsulotlar yo'q")
-        else:
-            await update.message.reply_text(text, parse_mode="Markdown")
-            logger.info(f"Admin {user_id} mahsulot ro'yxatini oldi")
-    elif text == "Buyurtmalar ro'yxati":
-        orders = get_all_orders()
-        if orders:
-            for order in orders:
-                user_data = get_user_data(order["user_id"])
-                if not user_data:
-                    await update.message.reply_text(f"Buyurtma uchun foydalanuvchi topilmadi: {order['user_name']}")
-                    logger.error(f"Buyurtmalar ro'yxati: Haridor topilmadi: ID={order['user_id']}")
-                    continue
-                bonus_text = f"Bonus summasi: {format_currency(order['bonus_sum'])}" if order["bonus_sum"] > 0 else ""
-                maps_link = f"https://maps.google.com/?q={order['address'].split('Lat:')[1].split(' Lon:')[0]},{order['address'].split(' Lon:')[1]}" if "Lat:" in order["address"] else order["address"]
-                buttons = []
-                if order["confirmed"] == "No":
-                    buttons = [
-                        [InlineKeyboardButton("Tasdiqlash", callback_data=f"confirm_order_{order['user_id']}"),
-                         InlineKeyboardButton("Rad etish", callback_data=f"reject_order_{order['user_id']}")]
-                    ]
-                await update.message.reply_text(
-                    f"Buyurtma:\n"
-                    f"Haridor ID: {order['user_id']}\n"
-                    f"Haridor: [{order['user_name']}](tg://user?id={order['user_id']})\n"
-                    f"Telefon: {order['phone']}\n"
-                    f"Manzil: [{order['address']}]({maps_link})\n"
-                    f"Guruh: {order['group_name']}\n"
-                    f"Sana: {order['date']}\n"
-                    f"Mahsulotlar:\n{order['cart_text']}\n"
-                    f"Umumiy summa: {format_currency(order['total_sum'])}\n"
-                    f"{bonus_text}\n"
-                    f"Holat: {'Tasdiqlangan' if order['confirmed'] == 'Yes' else 'Rad etildi' if order['confirmed'] == 'Rejected' else 'Tasdiqlanmagan'}",
-                    parse_mode="Markdown",
-                    reply_markup=InlineKeyboardMarkup(buttons)
-                )
-            logger.info(f"Admin {user_id} barcha buyurtmalarni ko'rdi")
-        else:
-            await update.message.reply_text("Hozirda buyurtmalar yo'q.")
-            logger.info(f"Admin {user_id} buyurtmalar ro'yxatini so'radi, lekin buyurtmalar yo'q")
-    elif text == "Haridorlar ro'yxati":
-        all_values = HARIDORLAR_SHEET.get_all_values()
-        headers = all_values[0]
-        users = []
-        for row in all_values[1:]:
-            users.append({
-                "ID": row[0] if len(row) > 0 else "",
-                "Ism": row[1] if len(row) > 1 else "",
-                "Bonus": float(row[5] or 0) if len(row) > 5 else 0
-            })
-        if users:
-            users_text = "\n".join([f"ID: {u['ID']}, Ism: {u['Ism']}, Bonus: {format_currency(u['Bonus'])}" for u in users])
-            await update.message.reply_text(users_text)
-            logger.info(f"Admin {user_id} haridorlar ro'yxatini oldi")
-        else:
-            await update.message.reply_text("Haridorlar yo'q.")
-            logger.info(f"Admin {user_id} haridorlar ro'yxatini so'radi, lekin haridorlar yo'q")
-    elif text == "Guruh o‘chirish":
-        groups = get_groups()
-        if not groups:
-            await update.message.reply_text("Hozirda guruhlar mavjud emas.")
-            logger.info(f"Admin {user_id} guruh o'chirishni so'radi, lekin guruhlar yo'q")
-            return
-        keyboard = [[InlineKeyboardButton(group, callback_data=f"delete_group_{group}")] for group in groups]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text("O‘chiriladigan guruhni tanlang:", reply_markup=reply_markup)
-        logger.info(f"Admin {user_id} guruh o'chirish uchun guruh tanlashni boshladi")
-    elif user_id in USER_STATE:
-        state = USER_STATE.get(user_id)
-        if not state:
-            await update.message.reply_text("Xato: Holat topilmadi. Iltimos, /start orqali qaytadan boshlang.")
-            logger.error(f"Admin {user_id} uchun USER_STATE topilmadi")
-            return
-        logger.info(f"Admin {user_id} holati: {state['step']}, kiritilgan matn: {text}")
-        if state["step"] == "group_name":
-            if not text.strip():
-                await update.message.reply_text("Iltimos, guruh nomini kiriting (bo'sh bo'lmasligi kerak).")
+    try:
+        if text == "Yangi guruh qo'shish":
+            USER_STATE[user_id] = {"step": "group_name"}
+            await update.message.reply_text("Yangi guruh nomini kiriting:")
+            logger.info(f"Admin {user_id} guruh qo'shishni boshladi")
+        elif text == "Mahsulot qo'shish":
+            groups = get_groups()
+            if not groups:
+                await update.message.reply_text("Hozirda guruhlar mavjud emas. Avval guruh qo'shing.")
+                logger.info(f"Admin {user_id} mahsulot qo'shishni so'radi, lekin guruhlar yo'q")
                 return
-            if save_group(text):
-                await update.message.reply_text(f"Guruh qo'shildi: {text}")
-                logger.info(f"Admin {user_id} yangi guruh qo'shdi: {text}")
+            keyboard = [[InlineKeyboardButton(group, callback_data=f"select_group_add_{group}")] for group in groups]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("Mahsulot qo'shish uchun guruhni tanlang:", reply_markup=reply_markup)
+            logger.info(f"Admin {user_id} mahsulot qo'shish uchun guruh tanlashni boshladi")
+        elif text == "Mahsulotlar ma'lumotlarini o'zgartirish":
+            groups = get_groups()
+            if not groups:
+                await update.message.reply_text("Hozirda guruhlar mavjud emas.")
+                logger.info(f"Admin {user_id} mahsulot o'zgartirishni so'radi, lekin guruhlar yo'q")
+                return
+            keyboard = [[InlineKeyboardButton(group, callback_data=f"select_group_edit_{group}")] for group in groups]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("Tahrirlamoqchi bo'lgan mahsulot guruhini tanlang:", reply_markup=reply_markup)
+            logger.info(f"Admin {user_id} mahsulot o'zgartirish uchun guruh tanlashni boshladi")
+        elif text == "Mahsulot ro'yxati":
+            groups = get_groups()
+            if not groups:
+                await update.message.reply_text("Hozirda guruhlar mavjud emas.")
+                logger.info(f"Admin {user_id} mahsulot ro'yxatini so'radi, lekin guruhlar yo'q")
+                return
+            text = "Mahsulotlar ro'yxati:\n\n"
+            for group in groups:
+                products = get_products(group)
+                if products:
+                    text += f"**{group}**:\n"
+                    for p in products:
+                        text += f"  • {p['name']}: {p['quantity']} dona, Narx: {format_currency(p['price'])}, Bonus: {p['bonus_percent']}%\n"
+                    text += "\n"
+            if text == "Mahsulotlar ro'yxati:\n\n":
+                await update.message.reply_text("Hozirda mahsulotlar mavjud emas.")
+                logger.info(f"Admin {user_id} mahsulot ro'yxatini so'radi, lekin mahsulotlar yo'q")
             else:
-                await update.message.reply_text("Guruh qo'shishda xato yuz berdi.")
-            del USER_STATE[user_id]
-        elif state["step"] == "product_name":
-            if not text.strip():
-                await update.message.reply_text("Iltimos, mahsulot nomini kiriting (bo'sh bo'lmasligi kerak).")
-                return
-            USER_STATE[user_id]["product_name"] = text.strip()
-            USER_STATE[user_id]["step"] = "product_price"
-            await update.message.reply_text("Mahsulot narxini kiriting:")
-            logger.info(f"Admin {user_id} mahsulot nomi kiritdi: {text}")
-        elif state["step"] == "product_price":
-            try:
-                price = float(text)
-                if price <= 0:
-                    await update.message.reply_text("Iltimos, 0 dan katta narx kiriting.")
-                    logger.warning(f"Admin {user_id} noto'g'ri narx kiritdi: {text}")
-                    return
-                USER_STATE[user_id]["product_price"] = price
-                USER_STATE[user_id]["step"] = "product_bonus"
-                await update.message.reply_text("Usta uchun bonus foizini kiriting (%):")
-                logger.info(f"Admin {user_id} mahsulot narxini kiritdi: {price}")
-            except ValueError:
-                await update.message.reply_text("Iltimos, to'g'ri narx kiriting (masalan, 40000).")
-                logger.warning(f"Admin {user_id} noto'g'ri narx formati kiritdi: {text}")
-        elif state["step"] == "product_bonus":
-            try:
-                bonus_percent = float(text)
-                if bonus_percent < 0:
-                    await update.message.reply_text("Iltimos, 0 yoki undan katta foiz kiriting.")
-                    logger.warning(f"Admin {user_id} noto'g'ri bonus foizi kiritdi: {text}")
-                    return
-                USER_STATE[user_id]["product_bonus"] = bonus_percent
-                USER_STATE[user_id]["step"] = "product_quantity"
-                await update.message.reply_text("Mahsulot miqdorini kiriting (dona):")
-                logger.info(f"Admin {user_id} bonus foizini kiritdi: {bonus_percent}")
-            except ValueError:
-                await update.message.reply_text("Iltimos, to'g'ri foiz kiriting (masalan, 12.5).")
-                logger.warning(f"Admin {user_id} noto'g'ri bonus foizi formati kiritdi: {text}")
-        elif state["step"] == "product_quantity":
-            try:
-                quantity = float(text)
-                if quantity < 0:
-                    await update.message.reply_text("Iltimos, 0 yoki undan katta miqdor kiriting.")
-                    logger.warning(f"Admin {user_id} noto'g'ri miqdor kiritdi: {text}")
-                    return
-                data = {
-                    "group_name": USER_SELECTED_GROUP.get(user_id, ""),
-                    "name": USER_STATE[user_id]["product_name"],
-                    "price": USER_STATE[user_id]["product_price"],
-                    "bonus_percent": USER_STATE[user_id]["product_bonus"],
-                    "quantity": quantity
-                }
-                if save_product(data):
-                    await update.message.reply_text(f"Mahsulot qo'shildi: {data['name']} ({data['group_name']})")
-                    logger.info(f"Admin {user_id} yangi mahsulot qo'shdi: {data['name']} ({data['group_name']})")
-                else:
-                    await update.message.reply_text("Mahsulot qo'shishda xato yuz berdi.")
-                del USER_STATE[user_id]
-                del USER_SELECTED_GROUP[user_id]
-            except ValueError:
-                await update.message.reply_text("Iltimos, to'g'ri miqdor kiriting (masalan, 50).")
-                logger.warning(f"Admin {user_id} noto'g'ri miqdor formati kiritdi: {text}")
-        elif state["step"] == "edit_product_name":
-            if not text.strip():
-                await update.message.reply_text("Iltimos, mahsulot nomini kiriting (bo'sh bo'lmasligi kerak).")
-                logger.warning(f"Admin {user_id} bo'sh mahsulot nomi kiritdi")
-                return
-            USER_STATE[user_id]["new_product_name"] = text.strip()
-            USER_STATE[user_id]["step"] = "edit_product_price"
-            await update.message.reply_text(
-                f"Yangi nom saqlandi: {text.strip()}\n"
-                f"Joriy narx: {format_currency(state['current_price'])}\n"
-                f"Yangi narx kiriting (yoki o'zgartirmaslik uchun joriy narxni qaytaring):"
-            )
-            logger.info(f"Admin {user_id} yangi mahsulot nomi kiritdi: {text.strip()}")
-        elif state["step"] == "edit_product_price":
-            try:
-                price = float(text)
-                if price <= 0:
-                    await update.message.reply_text("Iltimos, 0 dan katta narx kiriting.")
-                    logger.warning(f"Admin {user_id} noto'g'ri narx kiritdi: {text}")
-                    return
-                USER_STATE[user_id]["new_price"] = price
-                USER_STATE[user_id]["step"] = "edit_product_bonus"
-                await update.message.reply_text(
-                    f"Yangi narx saqlandi: {format_currency(price)}\n"
-                    f"Joriy bonus foizi: {state['current_bonus_percent']}%\n"
-                    f"Yangi bonus foizini kiriting (yoki o'zgartirmaslik uchun joriy foizni qaytaring):"
-                )
-                logger.info(f"Admin {user_id} yangi narx kiritdi: {price}")
-            except ValueError:
-                await update.message.reply_text("Iltimos, to'g'ri narx kiriting (masalan, 40000).")
-                logger.warning(f"Admin {user_id} noto'g'ri narx formati kiritdi: {text}")
-        elif state["step"] == "edit_product_bonus":
-            try:
-                bonus_percent = float(text)
-                if bonus_percent < 0:
-                    await update.message.reply_text("Iltimos, 0 yoki undan katta foiz kiriting.")
-                    logger.warning(f"Admin {user_id} noto'g'ri bonus foizi kiritdi: {text}")
-                    return
-                USER_STATE[user_id]["new_bonus_percent"] = bonus_percent
-                USER_STATE[user_id]["step"] = "edit_product_quantity"
-                await update.message.reply_text(
-                    f"Yangi bonus foizi saqlandi: {bonus_percent}%\n"
-                    f"Joriy miqdor: {state['current_quantity']} dona\n"
-                    f"Yangi miqdorni kiriting (yoki o'zgartirmaslik uchun joriy miqdorni qaytaring):"
-                )
-                logger.info(f"Admin {user_id} yangi bonus foizi kiritdi: {bonus_percent}")
-            except ValueError:
-                await update.message.reply_text("Iltimos, to'g'ri foiz kiriting (masalan, 12.5).")
-                logger.warning(f"Admin {user_id} noto'g'ri bonus foizi formati kiritdi: {text}")
-        elif state["step"] == "edit_product_quantity":
-            try:
-                quantity = float(text)
-                if quantity < 0:
-                    await update.message.reply_text("Iltimos, 0 yoki undan katta miqdor kiriting.")
-                    logger.warning(f"Admin {user_id} noto'g'ri miqdor kiritdi: {text}")
-                    return
-                data = {
-                    "group_name": USER_SELECTED_GROUP.get(user_id, ""),
-                    "name": USER_STATE[user_id]["new_product_name"],
-                    "price": USER_STATE[user_id]["new_price"],
-                    "bonus_percent": USER_STATE[user_id]["new_bonus_percent"],
-                    "quantity": quantity
-                }
-                if update_product(state["old_product_name"], state["old_group_name"], data):
+                await update.message.reply_text(text, parse_mode="Markdown")
+                logger.info(f"Admin {user_id} mahsulot ro'yxatini oldi")
+        elif text == "Buyurtmalar ro'yxati":
+            orders = get_all_orders()
+            if orders:
+                for order in orders:
+                    user_data = get_user_data(order["user_id"])
+                    if not user_data:
+                        await update.message.reply_text(f"Buyurtma uchun foydalanuvchi topilmadi: {order['user_name']}")
+                        logger.error(f"Buyurtmalar ro'yxati: Haridor topilmadi: ID={order['user_id']}")
+                        continue
+                    bonus_text = f"Bonus summasi: {format_currency(order['bonus_sum'])}" if order["bonus_sum"] > 0 else ""
+                    maps_link = f"https://maps.google.com/?q={order['address'].split('Lat:')[1].split(' Lon:')[0]},{order['address'].split(' Lon:')[1]}" if "Lat:" in order["address"] else order["address"]
+                    buttons = []
+                    if order["confirmed"] == "No":
+                        buttons = [
+                            [InlineKeyboardButton("Tasdiqlash", callback_data=f"confirm_order_{order['user_id']}"),
+                             InlineKeyboardButton("Rad etish", callback_data=f"reject_order_{order['user_id']}")]
+                        ]
                     await update.message.reply_text(
-                        f"Mahsulot yangilandi:\n"
-                        f"Nom: {data['name']}\n"
-                        f"Guruh: {data['group_name']}\n"
-                        f"Narx: {format_currency(data['price'])}\n"
-                        f"Bonus foizi: {data['bonus_percent']}%\n"
-                        f"Miqdori: {data['quantity']} dona"
+                        f"Buyurtma:\n"
+                        f"Haridor ID: {order['user_id']}\n"
+                        f"Haridor: [{order['user_name']}](tg://user?id={order['user_id']})\n"
+                        f"Telefon: {order['phone']}\n"
+                        f"Manzil: [{order['address']}]({maps_link})\n"
+                        f"Guruh: {order['group_name']}\n"
+                        f"Sana: {order['date']}\n"
+                        f"Mahsulotlar:\n{order['cart_text']}\n"
+                        f"Umumiy summa: {format_currency(order['total_sum'])}\n"
+                        f"{bonus_text}\n"
+                        f"Holat: {'Tasdiqlangan' if order['confirmed'] == 'Yes' else 'Rad etildi' if order['confirmed'] == 'Rejected' else 'Tasdiqlanmagan'}",
+                        parse_mode="Markdown",
+                        reply_markup=InlineKeyboardMarkup(buttons)
                     )
-                    logger.info(f"Admin {user_id} mahsulotni yangiladi: {data['name']} ({data['group_name']})")
+                logger.info(f"Admin {user_id} barcha buyurtmalarni ko'rdi")
+            else:
+                await update.message.reply_text("Hozirda buyurtmalar yo'q.")
+                logger.info(f"Admin {user_id} buyurtmalar ro'yxatini so'radi, lekin buyurtmalar yo'q")
+        elif text == "Haridorlar ro'yxati":
+            all_values = HARIDORLAR_SHEET.get_all_values()
+            headers = all_values[0]
+            users = []
+            for row in all_values[1:]:
+                users.append({
+                    "ID": row[0] if len(row) > 0 else "",
+                    "Ism": row[1] if len(row) > 1 else "",
+                    "Bonus": float(row[5] or 0) if len(row) > 5 else 0
+                })
+            if users:
+                users_text = "\n".join([f"ID: {u['ID']}, Ism: {u['Ism']}, Bonus: {format_currency(u['Bonus'])}" for u in users])
+                await update.message.reply_text(users_text)
+                logger.info(f"Admin {user_id} haridorlar ro'yxatini oldi")
+            else:
+                await update.message.reply_text("Haridorlar yo'q.")
+                logger.info(f"Admin {user_id} haridorlar ro'yxatini so'radi, lekin haridorlar yo'q")
+        elif text == "Guruh o‘chirish":
+            groups = get_groups()
+            if not groups:
+                await update.message.reply_text("Hozirda guruhlar mavjud emas.")
+                logger.info(f"Admin {user_id} guruh o'chirishni so'radi, lekin guruhlar yo'q")
+                return
+            keyboard = [[InlineKeyboardButton(group, callback_data=f"delete_group_{group}")] for group in groups]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("O‘chiriladigan guruhni tanlang:", reply_markup=reply_markup)
+            logger.info(f"Admin {user_id} guruh o'chirish uchun guruh tanlashni boshladi")
+        elif user_id in USER_STATE:
+            state = USER_STATE.get(user_id)
+            if not state:
+                await update.message.reply_text("Xato: Holat topilmadi. Iltimos, /start orqali qaytadan boshlang.")
+                logger.error(f"Admin {user_id} uchun USER_STATE topilmadi")
+                return
+            logger.info(f"Admin {user_id} holati: {state['step']}, kiritilgan matn: {text}")
+            if state["step"] == "group_name":
+                if not text.strip():
+                    await update.message.reply_text("Iltimos, guruh nomini kiriting (bo'sh bo'lmasligi kerak).")
+                    return
+                if save_group(text):
+                    await update.message.reply_text(f"Guruh qo'shildi: {text}")
+                    logger.info(f"Admin {user_id} yangi guruh qo'shdi: {text}")
                 else:
-                    await update.message.reply_text("Mahsulotni yangilashda xato yuz berdi.")
-                    logger.error(f"Admin {user_id} mahsulotni yangilashda xato: {data['name']} ({data['group_name']})")
+                    await update.message.reply_text("Guruh qo'shishda xato yuz berdi.")
                 del USER_STATE[user_id]
-                del USER_SELECTED_GROUP[user_id]
-            except ValueError:
-                await update.message.reply_text("Iltimos, to'g'ri miqdor kiriting (masalan, 50).")
-                logger.warning(f"Admin {user_id} noto'g'ri miqdor formati kiritdi: {text}")
-    else:
-        await update.message.reply_text("Noma'lum buyruq. Iltimos, menyudan buyruq tanlang.")
+            elif state["step"] == "product_name":
+                if not text.strip():
+                    await update.message.reply_text("Iltimos, mahsulot nomini kiriting (bo'sh bo'lmasligi kerak).")
+                    return
+                USER_STATE[user_id]["product_name"] = text.strip()
+                USER_STATE[user_id]["step"] = "product_price"
+                await update.message.reply_text("Mahsulot narxini kiriting:")
+                logger.info(f"Admin {user_id} mahsulot nomi kiritdi: {text}")
+            elif state["step"] == "product_price":
+                try:
+                    price = float(text)
+                    if price <= 0:
+                        await update.message.reply_text("Iltimos, 0 dan katta narx kiriting.")
+                        logger.warning(f"Admin {user_id} noto'g'ri narx kiritdi: {text}")
+                        return
+                    USER_STATE[user_id]["product_price"] = price
+                    USER_STATE[user_id]["step"] = "product_bonus"
+                    await update.message.reply_text("Usta uchun bonus foizini kiriting (%):")
+                    logger.info(f"Admin {user_id} mahsulot narxini kiritdi: {price}")
+                except ValueError:
+                    await update.message.reply_text("Iltimos, to'g'ri narx kiriting (masalan, 40000).")
+                    logger.warning(f"Admin {user_id} noto'g'ri narx formati kiritdi: {text}")
+            elif state["step"] == "product_bonus":
+                try:
+                    bonus_percent = float(text)
+                    if bonus_percent < 0:
+                        await update.message.reply_text("Iltimos, 0 yoki undan katta foiz kiriting.")
+                        logger.warning(f"Admin {user_id} noto'g'ri bonus foizi kiritdi: {text}")
+                        return
+                    USER_STATE[user_id]["product_bonus"] = bonus_percent
+                    USER_STATE[user_id]["step"] = "product_quantity"
+                    await update.message.reply_text("Mahsulot miqdorini kiriting (dona):")
+                    logger.info(f"Admin {user_id} bonus foizini kiritdi: {bonus_percent}")
+                except ValueError:
+                    await update.message.reply_text("Iltimos, to'g'ri foiz kiriting (masalan, 12.5).")
+                    logger.warning(f"Admin {user_id} noto'g'ri bonus foizi formati kiritdi: {text}")
+            elif state["step"] == "product_quantity":
+                try:
+                    quantity = float(text)
+                    if quantity < 0:
+                        await update.message.reply_text("Iltimos, 0 yoki undan katta miqdor kiriting.")
+                        logger.warning(f"Admin {user_id} noto'g'ri miqdor kiritdi: {text}")
+                        return
+                    data = {
+                        "group_name": USER_SELECTED_GROUP.get(user_id, ""),
+                        "name": USER_STATE[user_id]["product_name"],
+                        "price": USER_STATE[user_id]["product_price"],
+                        "bonus_percent": USER_STATE[user_id]["product_bonus"],
+                        "quantity": quantity
+                    }
+                    if save_product(data):
+                        await update.message.reply_text(f"Mahsulot qo'shildi: {data['name']} ({data['group_name']})")
+                        logger.info(f"Admin {user_id} yangi mahsulot qo'shdi: {data['name']} ({data['group_name']})")
+                    else:
+                        await update.message.reply_text("Mahsulot qo'shishda xato yuz berdi.")
+                    del USER_STATE[user_id]
+                    del USER_SELECTED_GROUP[user_id]
+                except ValueError:
+                    await update.message.reply_text("Iltimos, to'g'ri miqdor kiriting (masalan, 50).")
+                    logger.warning(f"Admin {user_id} noto'g'ri miqdor formati kiritdi: {text}")
+            elif state["step"] == "edit_product_name":
+                if not text.strip():
+                    await update.message.reply_text("Iltimos, mahsulot nomini kiriting (bo'sh bo'lmasligi kerak).")
+                    logger.warning(f"Admin {user_id} bo'sh mahsulot nomi kiritdi")
+                    return
+                USER_STATE[user_id]["new_product_name"] = text.strip()
+                USER_STATE[user_id]["step"] = "edit_product_price"
+                await update.message.reply_text(
+                    f"Yangi nom saqlandi: {text.strip()}\n"
+                    f"Joriy narx: {format_currency(state['current_price'])}\n"
+                    f"Yangi narx kiriting (yoki o'zgartirmaslik uchun joriy narxni qaytaring):"
+                )
+                logger.info(f"Admin {user_id} yangi mahsulot nomi kiritdi: {text.strip()}")
+            elif state["step"] == "edit_product_price":
+                try:
+                    price = float(text)
+                    if price <= 0:
+                        await update.message.reply_text("Iltimos, 0 dan katta narx kiriting.")
+                        logger.warning(f"Admin {user_id} noto'g'ri narx kiritdi: {text}")
+                        return
+                    USER_STATE[user_id]["new_price"] = price
+                    USER_STATE[user_id]["step"] = "edit_product_bonus"
+                    await update.message.reply_text(
+                        f"Yangi narx saqlandi: {format_currency(price)}\n"
+                        f"Joriy bonus foizi: {state['current_bonus_percent']}%\n"
+                        f"Yangi bonus foizini kiriting (yoki o'zgartirmaslik uchun joriy foizni qaytaring):"
+                    )
+                    logger.info(f"Admin {user_id} yangi narx kiritdi: {price}")
+                except ValueError:
+                    await update.message.reply_text("Iltimos, to'g'ri narx kiriting (masalan, 40000).")
+                    logger.warning(f"Admin {user_id} noto'g'ri narx formati kiritdi: {text}")
+            elif state["step"] == "edit_product_bonus":
+                try:
+                    bonus_percent = float(text)
+                    if bonus_percent < 0:
+                        await update.message.reply_text("Iltimos, 0 yoki undan katta foiz kiriting.")
+                        logger.warning(f"Admin {user_id} noto'g'ri bonus foizi kiritdi: {text}")
+                        return
+                    USER_STATE[user_id]["new_bonus_percent"] = bonus_percent
+                    USER_STATE[user_id]["step"] = "edit_product_quantity"
+                    await update.message.reply_text(
+                        f"Yangi bonus foizi saqlandi: {bonus_percent}%\n"
+                        f"Joriy miqdor: {state['current_quantity']} dona\n"
+                        f"Yangi miqdorni kiriting (yoki o'zgartirmaslik uchun joriy miqdorni qaytaring):"
+                    )
+                    logger.info(f"Admin {user_id} yangi bonus foizi kiritdi: {bonus_percent}")
+                except ValueError:
+                    await update.message.reply_text("Iltimos, to'g'ri foiz kiriting (masalan, 12.5).")
+                    logger.warning(f"Admin {user_id} noto'g'ri bonus foizi formati kiritdi: {text}")
+            elif state["step"] == "edit_product_quantity":
+                try:
+                    quantity = float(text)
+                    if quantity < 0:
+                        await update.message.reply_text("Iltimos, 0 yoki undan katta miqdor kiriting.")
+                        logger.warning(f"Admin {user_id} noto'g'ri miqdor kiritdi: {text}")
+                        return
+                    data = {
+                        "group_name": USER_SELECTED_GROUP.get(user_id, ""),
+                        "name": USER_STATE[user_id]["new_product_name"],
+                        "price": USER_STATE[user_id]["new_price"],
+                        "bonus_percent": USER_STATE[user_id]["new_bonus_percent"],
+                        "quantity": quantity
+                    }
+                    if update_product(state["old_product_name"], state["old_group_name"], data):
+                        await update.message.reply_text(
+                            f"Mahsulot yangilandi:\n"
+                            f"Nom: {data['name']}\n"
+                            f"Guruh: {data['group_name']}\n"
+                            f"Narx: {format_currency(data['price'])}\n"
+                            f"Bonus foizi: {data['bonus_percent']}%\n"
+                            f"Miqdori: {data['quantity']} dona"
+                        )
+                        logger.info(f"Admin {user_id} mahsulotni yangiladi: {data['name']} ({data['group_name']})")
+                    else:
+                        await update.message.reply_text("Mahsulotni yangilashda xato yuz berdi.")
+                        logger.error(f"Admin {user_id} mahsulotni yangilashda xato: {data['name']} ({data['group_name']})")
+                    del USER_STATE[user_id]
+                    del USER_SELECTED_GROUP[user_id]
+                except ValueError:
+                    await update.message.reply_text("Iltimos, to'g'ri miqdor kiriting (masalan, 50).")
+                    logger.warning(f"Admin {user_id} noto'g'ri miqdor formati kiritdi: {text}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Xatolarni qayta ishlash"""

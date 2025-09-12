@@ -1278,7 +1278,6 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     logger.warning(f"Admin {user_id} noto'g'ri miqdor formati kiritdi: {text}")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xatolarni qayta ishlash"""
     try:
         logger.error(f"Update {update} caused error {context.error}", exc_info=True)
         if update:

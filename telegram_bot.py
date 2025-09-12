@@ -1280,7 +1280,7 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         logger.error(f"Update {update} caused error {context.error}", exc_info=True)
-        if update:
+        if update and hasattr(update, 'message') and update.message:
             await update.message.reply_text("Xato yuz berdi, iltimos, keyinroq urinib ko'ring yoki admin bilan bog'laning.")
     except Exception as e:
         logger.error(f"Error in error_handler: {e}", exc_info=True)

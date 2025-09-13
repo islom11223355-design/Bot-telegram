@@ -1277,6 +1277,10 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text("Iltimos, to'g'ri miqdor kiriting (masalan, 50).")
                     logger.warning(f"Admin {user_id} noto'g'ri miqdor formati kiritdi: {text}")
 
+    except Exception as e:
+        logger.error(f"Xato admin funksiyasida: {e}", exc_info=True)
+        await update.message.reply_text("Xato yuz berdi, iltimos, keyinroq urinib ko'ring.")
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         logger.error(f"Update {update} caused error {context.error}", exc_info=True)

@@ -1303,16 +1303,18 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
 def run_health_check_server():
     """Health check serverini ishga tushirish"""
-    server_address = ("", 8000)  # 8000 o'rniga 8080
+    server_address = ("", 8000)
     httpd = HTTPServer(server_address, HealthCheckHandler)
     logger.info("Starting health check server on port 8000...")
     httpd.serve_forever()
+
 
 def main():
     """Botni ishga tushirish"""
     try:
         init_sheets()
-        application = Application.builder().token(BOT_TOKEN).build()
+        request = HTTPXRequest(http2=True, connection_pool_size=20, max_connections=20)
+        application = Application.builder().token(BOT_TOKEN).request(request).build()
 
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
@@ -1321,16 +1323,9 @@ def main():
         application.add_handler(CallbackQueryHandler(handle_callback_query))
         application.add_error_handler(error_handler)
 
-        # Health check serverini ishga tushirish
         threading.Thread(target=run_health_check_server, daemon=True).start()
 
-        # Drop pending updates bilan polling
-        application.run_polling(
-            allowed_updates=Update.ALL_TYPES,
-            drop_pending_updates=True,
-            close_loop=False
-        )
-            
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
     except Conflict:
         logger.error("Bot is already running elsewhere. Terminating.")
     except Exception as e:

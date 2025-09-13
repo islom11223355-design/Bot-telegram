@@ -1303,17 +1303,17 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
 
 def run_health_check_server():
     """Health check serverini ishga tushirish"""
-    server_address = ("", 8000)
+    server_address = ("", 8080)  # 8000 o'rniga 8080
     httpd = HTTPServer(server_address, HealthCheckHandler)
-    logger.info("Starting health check server on port 8000...")
+    logger.info("Starting health check server on port 8080...")
     httpd.serve_forever()
 
 def main():
     """Botni ishga tushirish"""
     try:
         init_sheets()
-        request = HTTPXRequest(http2=True, connection_pool_size=20, max_connections=20)
-        application = Application.builder().token(BOT_TOKEN).request(request).build()
+        # Oddiy Application yaratish
+        application = Application.builder().token(BOT_TOKEN).build()
 
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))

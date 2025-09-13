@@ -1308,12 +1308,12 @@ def run_health_check_server():
     logger.info("Starting health check server on port 8000...")
     httpd.serve_forever()
 
-
 def main():
     """Botni ishga tushirish"""
     try:
         init_sheets()
-        request = HTTPXRequest(http2=True, connection_pool_size=20, max_connections=20)
+        # HTTPXRequest sozlamalarini yangilash
+        request = HTTPXRequest(connection_pool_size=20)
         application = Application.builder().token(BOT_TOKEN).request(request).build()
 
         application.add_handler(CommandHandler("start", start))

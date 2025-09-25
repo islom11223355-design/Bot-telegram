@@ -465,70 +465,8 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await handle_admin(update, context)
             return
 
-        user_data = get_user_data(user_id)
-        if not user_data and text != "Ma'lumotlaringizni saqlang":
-            await update.message.reply_text("Iltimos, avval ma'lumotlaringizni saqlang.")
-            return
-
-        if text == "Ma'lumotlaringizni saqlang":
-            USER_STATE[user_id] = {"step": "name"}
-            await update.message.reply_text("Ismingizni kiriting:")
-        elif text == "Shaxsiy ma'lumotlarni o'zgartirish":
-            USER_STATE[user_id] = {
-                "step": "edit_name",
-                "bonus": user_data["bonus"],
-                "current_name": user_data["name"],
-                "current_phone": user_data["phone"],
-                "current_address": user_data["address"],
-                "current_role": user_data["role"]
-            }
-            await update.message.reply_text(f"Joriy ism: {user_data['name']}\nYangi ismingizni kiriting (yoki o'zgartirmaslik uchun joriy ismni qaytaring):")
-        elif text == "Mahsulot buyurtma qilish":
-            CART[user_id] = []
-            groups = get_groups()
-            if not groups:
-                await update.message.reply_text("Hozirda guruhlar mavjud emas.")
-                return
-            keyboard = [[InlineKeyboardButton(group, callback_data=f"group_{group}")] for group in groups]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text("Mahsulot buyurtma qilish uchun guruhni tanlang:", reply_markup=reply_markup)
-        elif text == "Mening buyurtmalarim":
-            orders = get_orders_by_user(user_id)
-            if orders:
-                orders_text = []
-                for order in orders:
-                    bonus_text = f"Bonus summasi: {format_currency(order['bonus_sum'])}" if order["bonus_sum"] > 0 else ""
-                    orders_text.append(
-                        f"Sana: {order['date']}\n"
-                        f"Guruh: {order['group_name']}\n"
-                        f"Mahsulotlar:\n{order['cart_text']}\n"
-                        f"Umumiy summa: {format_currency(order['total_sum'])}\n"
-                        f"{bonus_text}\n"
-                        f"Holat: {'Tasdiqlangan' if order['confirmed'] == 'Yes' else 'Rad etildi' if order['confirmed'] == 'Rejected' else 'Tasdiqlanmagan'}"
-                    )
-                await update.message.reply_text("\n\n".join(orders_text))
-            else:
-                await update.message.reply_text("Sizda buyurtmalar yo'q.")
-            logger.info(f"User {user_id} buyurtmalarini ko'rdi")
-        elif text == "Umumiy Bonus" and user_data["role"] == "Usta":
-            await update.message.reply_text(f"Sizning umumiy bonusingiz: {format_currency(user_data['bonus'])}")
-        elif text == "Bonusni yechish" and user_data["role"] == "Usta":
-            if user_data["bonus"] <= 0:
-                await update.message.reply_text("Sizda yechish uchun bonus mavjud emas.")
-                return
-            BONUS_REQUESTS[user_id] = user_data["bonus"]
-            await context.bot.send_message(
-                chat_id=ADMINS[0],
-                text=f"Foydalanuvchi {user_id} ({user_data['name']}) {format_currency(user_data['bonus'])} bonusni yechmoqchi. Tasdiqlaysizmi?",
-                reply_markup=InlineKeyboardMarkup([
-                    [InlineKeyboardButton("Tasdiqlash", callback_data=f"approve_bonus_{user_id}"),
-                     InlineKeyboardButton("Rad etish", callback_data=f"reject_bonus_{user_id}")]
-                ])
-            )
-            await update.message.reply_text("Bonusni yechish so'rovi adminga yuborildi.")
-        elif text == "Admin bilan bog'lanish":
-            await update.message.reply_text(f"Admin bilan bog'lanish uchun: [{ADMINS[0]}](tg://user?id={ADMINS[0]})", parse_mode="Markdown")
-        elif user_id in USER_STATE:
+        # Handle user state for data entry first
+        if user_id in USER_STATE:
             state = USER_STATE[user_id]
             if state["step"] == "name":
                 if not text.strip():
@@ -646,6 +584,72 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 ]
                 reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
                 await update.message.reply_text(f"Joriy faoliyat turi: {state['current_role']}\nYangi faoliyat turini tanlang (yoki o'zgartirmaslik uchun joriy turni qaytaring):", reply_markup=reply_markup)
+            return
+
+        # Check user data after handling state
+        user_data = get_user_data(user_id)
+        if not user_data and text != "Ma'lumotlaringizni saqlang":
+            await update.message.reply_text("Iltimos, avval ma'lumotlaringizni saqlang.")
+            return
+
+        if text == "Ma'lumotlaringizni saqlang":
+            USER_STATE[user_id] = {"step": "name"}
+            await update.message.reply_text("Ismingizni kiriting:")
+        elif text == "Shaxsiy ma'lumotlarni o'zgartirish":
+            USER_STATE[user_id] = {
+                "step": "edit_name",
+                "bonus": user_data["bonus"],
+                "current_name": user_data["name"],
+                "current_phone": user_data["phone"],
+                "current_address": user_data["address"],
+                "current_role": user_data["role"]
+            }
+            await update.message.reply_text(f"Joriy ism: {user_data['name']}\nYangi ismingizni kiriting (yoki o'zgartirmaslik uchun joriy ismni qaytaring):")
+        elif text == "Mahsulot buyurtma qilish":
+            CART[user_id] = []
+            groups = get_groups()
+            if not groups:
+                await update.message.reply_text("Hozirda guruhlar mavjud emas.")
+                return
+            keyboard = [[InlineKeyboardButton(group, callback_data=f"group_{group}")] for group in groups]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("Mahsulot buyurtma qilish uchun guruhni tanlang:", reply_markup=reply_markup)
+        elif text == "Mening buyurtmalarim":
+            orders = get_orders_by_user(user_id)
+            if orders:
+                orders_text = []
+                for order in orders:
+                    bonus_text = f"Bonus summasi: {format_currency(order['bonus_sum'])}" if order["bonus_sum"] > 0 else ""
+                    orders_text.append(
+                        f"Sana: {order['date']}\n"
+                        f"Guruh: {order['group_name']}\n"
+                        f"Mahsulotlar:\n{order['cart_text']}\n"
+                        f"Umumiy summa: {format_currency(order['total_sum'])}\n"
+                        f"{bonus_text}\n"
+                        f"Holat: {'Tasdiqlangan' if order['confirmed'] == 'Yes' else 'Rad etildi' if order['confirmed'] == 'Rejected' else 'Tasdiqlanmagan'}"
+                    )
+                await update.message.reply_text("\n\n".join(orders_text))
+            else:
+                await update.message.reply_text("Sizda buyurtmalar yo'q.")
+            logger.info(f"User {user_id} buyurtmalarini ko'rdi")
+        elif text == "Umumiy Bonus" and user_data["role"] == "Usta":
+            await update.message.reply_text(f"Sizning umumiy bonusingiz: {format_currency(user_data['bonus'])}")
+        elif text == "Bonusni yechish" and user_data["role"] == "Usta":
+            if user_data["bonus"] <= 0:
+                await update.message.reply_text("Sizda yechish uchun bonus mavjud emas.")
+                return
+            BONUS_REQUESTS[user_id] = user_data["bonus"]
+            await context.bot.send_message(
+                chat_id=ADMINS[0],
+                text=f"Foydalanuvchi {user_id} ({user_data['name']}) {format_currency(user_data['bonus'])} bonusni yechmoqchi. Tasdiqlaysizmi?",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("Tasdiqlash", callback_data=f"approve_bonus_{user_id}"),
+                     InlineKeyboardButton("Rad etish", callback_data=f"reject_bonus_{user_id}")]
+                ])
+            )
+            await update.message.reply_text("Bonusni yechish so'rovi adminga yuborildi.")
+        elif text == "Admin bilan bog'lanish":
+            await update.message.reply_text(f"Admin bilan bog'lanish uchun: [{ADMINS[0]}](tg://user?id={ADMINS[0]})", parse_mode="Markdown")
     except (TimedOut, NetworkError) as e:
         logger.error(f"TimedOut in handle_message: {e}")
         await update.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")

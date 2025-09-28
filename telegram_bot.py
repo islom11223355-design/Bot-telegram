@@ -345,8 +345,6 @@ def save_order(user_id, cart, address, group_name):
             "No"
         ])
         order_id = BUYURTMALAR_SHEET.row_count
-        if total_bonus > 0:
-            update_bonus(user_id, total_bonus)
         logger.info(f"Buyurtma saqlandi: ID={user_id}, Guruh={group_name}, Bonus={total_bonus}, Order ID={order_id}")
         return order_id
     except Exception as e:
@@ -786,6 +784,9 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 await query.message.reply_text("Xato: Buyurtma saqlanmadi!")
                 logger.error(f"confirm_order: Buyurtma saqlanmadi: User ID={order_user_id}")
                 return
+            BUYURTMALAR_SHEET.update_cell(order_row, 10, "Yes")
+            if order["bonus_sum"] > 0:
+                update_bonus(order_user_id, order["bonus_sum"])
             user_data = get_user_data(order_user_id)
             if not user_data:
                 await query.message.reply_text("Xato: Foydalanuvchi topilmadi!")
@@ -814,6 +815,12 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 logger.error(f"reject_order: Buyurtma topilmadi: User ID={order_user_id}")
                 return
             order = ORDER_CACHE[order_user_id]
+            order_row = save_order(order["user_id"], order["cart"], order["address"], order["group_name"])
+            if order_row is None:
+                await query.message.reply_text("Xato: Buyurtma saqlanmadi!")
+                logger.error(f"reject_order: Buyurtma saqlanmadi: User ID={order_user_id}")
+                return
+            BUYURTMALAR_SHEET.update_cell(order_row, 10, "Rejected")
             await context.bot.send_message(
                 chat_id=order_user_id,
                 text="Sizning buyurtmangiz rad etildi. Qo'shimcha ma'lumot uchun admin bilan bog'laning."
@@ -1001,12 +1008,67 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
             for p in products:
                 text += f"  • {p['name']}: {p['quantity']} dona, Narx: {format_currency(p['price'])}, Bonus: {p['bonus_percent']}%\n"
             await query.message.reply_text(text, parse_mode="Markdown")
+        elif data == "last_order":
+            await show_orders(update, context, mode="last")
+        elif data == "last_5_orders":
+            await show_orders(update, context, mode="last_5")
+        elif data == "all_orders":
+            await show_orders(update, context, mode="all")
     except (TimedOut, NetworkError) as e:
         logger.error(f"TimedOut in handle_admin_callback: {e}")
         await query.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
     except Exception as e:
         logger.error(f"Unexpected error in handle_admin_callback: {e}", exc_info=True)
         await query.message.reply_text("Xato yuz berdi, iltimos, keyinroq urinib ko'ring.")
+
+async def show_orders(update: Update, context: ContextTypes.DEFAULT_TYPE, mode: str):
+    """Buyurtmalarni ko'rsatish funksiyasi"""
+    query = update.callback_query
+    user_id = str(query.from_user.id)
+    orders = get_all_orders()
+    if not orders:
+        await query.message.reply_text("Hozirda buyurtmalar yo'q.")
+        return
+
+    if mode == "last":
+        selected_orders = [orders[-1]]
+    elif mode == "last_5":
+        selected_orders = orders[-5:]
+    elif mode == "all":
+        selected_orders = orders
+    else:
+        selected_orders = []
+
+    for order in selected_orders:
+        user_data = get_user_data(order["user_id"])
+        if not user_data:
+            await query.message.reply_text(f"Buyurtma uchun foydalanuvchi topilmadi: {order['user_name']}")
+            logger.error(f"Buyurtmalar ro'yxati: Haridor topilmadi: ID={order['user_id']}")
+            continue
+        bonus_text = f"Bonus summasi: {format_currency(order['bonus_sum'])}" if order["bonus_sum"] > 0 else ""
+        maps_link = f"https://maps.google.com/?q={order['address'].split('Lat:')[1].split(' Lon:')[0]},{order['address'].split(' Lon:')[1]}" if "Lat:" in order["address"] else order["address"]
+        buttons = []
+        if order["confirmed"] == "No":
+            buttons = [
+                [InlineKeyboardButton("Tasdiqlash", callback_data=f"confirm_order_{order['user_id']}"),
+                 InlineKeyboardButton("Rad etish", callback_data=f"reject_order_{order['user_id']}")]
+            ]
+        await query.message.reply_text(
+            f"Buyurtma:\n"
+            f"Haridor ID: {order['user_id']}\n"
+            f"Haridor: [{order['user_name']}](tg://user?id={order['user_id']})\n"
+            f"Telefon: {order['phone']}\n"
+            f"Manzil: [{order['address']}]({maps_link})\n"
+            f"Guruh: {order['group_name']}\n"
+            f"Sana: {order['date']}\n"
+            f"Mahsulotlar:\n{order['cart_text']}\n"
+            f"Umumiy summa: {format_currency(order['total_sum'])}\n"
+            f"{bonus_text}\n"
+            f"Holat: {'Tasdiqlangan' if order['confirmed'] == 'Yes' else 'Rad etildi' if order['confirmed'] == 'Rejected' else 'Tasdiqlanmagan'}",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(buttons)
+        )
+    logger.info(f"Admin {user_id} {mode} buyurtmalarni ko'rdi")
 
 async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Admin funksiyalari"""
@@ -1060,41 +1122,14 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await update.message.reply_text(text, parse_mode="Markdown")
                 logger.info(f"Admin {user_id} mahsulot ro'yxatini oldi")
         elif text == "Buyurtmalar ro'yxati":
-            orders = get_all_orders()
-            if orders:
-                for order in orders:
-                    user_data = get_user_data(order["user_id"])
-                    if not user_data:
-                        await update.message.reply_text(f"Buyurtma uchun foydalanuvchi topilmadi: {order['user_name']}")
-                        logger.error(f"Buyurtmalar ro'yxati: Haridor topilmadi: ID={order['user_id']}")
-                        continue
-                    bonus_text = f"Bonus summasi: {format_currency(order['bonus_sum'])}" if order["bonus_sum"] > 0 else ""
-                    maps_link = f"https://maps.google.com/?q={order['address'].split('Lat:')[1].split(' Lon:')[0]},{order['address'].split(' Lon:')[1]}" if "Lat:" in order["address"] else order["address"]
-                    buttons = []
-                    if order["confirmed"] == "No":
-                        buttons = [
-                            [InlineKeyboardButton("Tasdiqlash", callback_data=f"confirm_order_{order['user_id']}"),
-                             InlineKeyboardButton("Rad etish", callback_data=f"reject_order_{order['user_id']}")]
-                        ]
-                    await update.message.reply_text(
-                        f"Buyurtma:\n"
-                        f"Haridor ID: {order['user_id']}\n"
-                        f"Haridor: [{order['user_name']}](tg://user?id={order['user_id']})\n"
-                        f"Telefon: {order['phone']}\n"
-                        f"Manzil: [{order['address']}]({maps_link})\n"
-                        f"Guruh: {order['group_name']}\n"
-                        f"Sana: {order['date']}\n"
-                        f"Mahsulotlar:\n{order['cart_text']}\n"
-                        f"Umumiy summa: {format_currency(order['total_sum'])}\n"
-                        f"{bonus_text}\n"
-                        f"Holat: {'Tasdiqlangan' if order['confirmed'] == 'Yes' else 'Rad etildi' if order['confirmed'] == 'Rejected' else 'Tasdiqlanmagan'}",
-                        parse_mode="Markdown",
-                        reply_markup=InlineKeyboardMarkup(buttons)
-                    )
-                logger.info(f"Admin {user_id} barcha buyurtmalarni ko'rdi")
-            else:
-                await update.message.reply_text("Hozirda buyurtmalar yo'q.")
-                logger.info(f"Admin {user_id} buyurtmalar ro'yxatini so'radi, lekin buyurtmalar yo'q")
+            keyboard = [
+                [InlineKeyboardButton("Ohirgi buyurtma", callback_data="last_order")],
+                [InlineKeyboardButton("Ohirgi 5 ta buyurtma", callback_data="last_5_orders")],
+                [InlineKeyboardButton("Barcha buyurtmalar", callback_data="all_orders")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text("Buyurtmalar ro'yxatini qaysi ko'rinishda ko'rmoqchisiz?", reply_markup=reply_markup)
+            logger.info(f"Admin {user_id} buyurtmalar ro'yxatini so'radi")
         elif text == "Haridorlar ro'yxati":
             all_values = HARIDORLAR_SHEET.get_all_values()
             headers = all_values[0]
@@ -1323,7 +1358,7 @@ def main():
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         application.add_handler(MessageHandler(filters.LOCATION, handle_location))
-        application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|delete_product_|select_group_edit_|select_group_add_|delete_group_)"))
+        application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|delete_product_|select_group_edit_|select_group_add_|delete_group_|last_order|last_5_orders|all_orders)"))
         application.add_handler(CallbackQueryHandler(handle_callback_query))
         application.add_error_handler(error_handler)
 

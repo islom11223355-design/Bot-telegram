@@ -349,10 +349,10 @@ def save_order(user_id, cart, address, group_name, confirmed="Yes"):
             arxivlanadigan_qatorlar = joriy_qator_soni - max_qatorlar + 1
             all_values = BUYURTMALAR_SHEET.get_all_values()
             headers = all_values[0]
-            ko‘chiriladigan_qatorlar = all_values[1:arxivlanadigan_qatorlar + 1]
-            BUYURTMALAR_ARCHIVE_SHEET.append_rows(ko‘chiriladigan_qatorlar)
+            kochiriladigan_qatorlar = all_values[1:arxivlanadigan_qatorlar + 1]
+            BUYURTMALAR_ARCHIVE_SHEET.append_rows(kochiriladigan_qatorlar)
             BUYURTMALAR_SHEET.delete_rows(2, arxivlanadigan_qatorlar)
-            logger.info(f"{arxivlanadigan_qatorlar} ta eski buyurtma Buyurtmalar_Archive varag‘iga ko‘chirildi")
+            logger.info(f"{arxivlanadigan_qatorlar} ta eski buyurtma Buyurtmalar_Archive varag'iga ko'chirildi")
         
         BUYURTMALAR_SHEET.append_row([
             str(user_id),

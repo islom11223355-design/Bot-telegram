@@ -770,6 +770,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 return
             keyboard = [[InlineKeyboardButton(f"{p['name']} ({format_currency(p['price'])})", callback_data=f"product_{p['name']}")] for p in products]
             keyboard.append([InlineKeyboardButton("Savatni tasdiqlash", callback_data="confirm_cart")])
+            keyboard.append([InlineKeyboardButton("Boshqa guruh", callback_data="select_another_group")])
             reply_markup = InlineKeyboardMarkup(keyboard)
             await query.message.reply_text(f"{group_name} guruhidagi mahsulotlar:", reply_markup=reply_markup)
         elif data.startswith("product_"):
@@ -782,6 +783,14 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 return
             USER_STATE[user_id] = {"step": "order_location"}
             await query.message.reply_text("Buyurtma yetkazib beriladigan lokatsiyani yuboring:", reply_markup=ReplyKeyboardMarkup([[KeyboardButton("Lokatsiyani yuborish", request_location=True)]], resize_keyboard=True))
+        elif data == "select_another_group":
+            groups = get_groups()
+            if not groups:
+                await query.message.reply_text("Hozirda guruhlar mavjud emas.")
+                return
+            keyboard = [[InlineKeyboardButton(group, callback_data=f"group_{group}")] for group in groups]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.message.reply_text("Boshqa guruhni tanlang:", reply_markup=reply_markup)
     except (TimedOut, NetworkError) as e:
         logger.error(f"TimedOut in handle_callback_query: {e}")
         await query.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")

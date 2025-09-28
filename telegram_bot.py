@@ -39,6 +39,7 @@ try:
     HARIDORLAR_SHEET = SHEET.worksheet("Haridorlar")
     MAHSULOTLAR_SHEET = SHEET.worksheet("Mahsulotlar")
     BUYURTMALAR_SHEET = SHEET.worksheet("Buyurtmalar")
+    BUYURTMALAR_ARCHIVE_SHEET = None  # Arxiv varag‘i
     GURUHLAR_SHEET = SHEET.worksheet("Guruhlar")
 except Exception as e:
     logger.error(f"Google Sheets initialization error: {e}")
@@ -68,6 +69,7 @@ def format_currency(amount):
 
 def init_sheets():
     """Google Sheets sahifalarini boshlash va sarlavhalarni kiritish"""
+    global BUYURTMALAR_ARCHIVE_SHEET
     try:
         # Haridorlar varag‘i
         haridorlar_headers = ["ID", "Ism", "Telefon", "Manzil", "Faoliyat turi", "Bonus", "Tahrir So‘rovi", "Tahrir Tasdiqlangan"]
@@ -108,6 +110,14 @@ def init_sheets():
             if current_headers != guruhlar_headers:
                 logger.warning(f"Guruhlar varag‘i sarlavhalari noto‘g‘ri: {current_headers}")
                 GURUHLAR_SHEET.update(range_name="A1:A1", values=[guruhlar_headers])
+
+        # Buyurtmalar_Archive varag‘ini boshlash
+        try:
+            BUYURTMALAR_ARCHIVE_SHEET = SHEET.worksheet("Buyurtmalar_Archive")
+        except gspread.exceptions.WorksheetNotFound:
+            BUYURTMALAR_ARCHIVE_SHEET = SHEET.add_worksheet(title="Buyurtmalar_Archive", rows=1000, cols=26)
+            BUYURTMALAR_ARCHIVE_SHEET.append_row(buyurtmalar_headers)
+        logger.info("Buyurtmalar_Archive varag‘i tayyorlandi")
     except Exception as e:
         logger.error(f"Sheets init xatosi: {e}")
         raise
@@ -321,7 +331,7 @@ def get_groups():
         logger.error(f"Guruhlar olish xatosi: {e}")
         return []
 
-def save_order(user_id, cart, address, group_name):
+def save_order(user_id, cart, address, group_name, confirmed="Yes"):
     """Buyurtmani saqlash"""
     try:
         user_data = get_user_data(user_id)
@@ -331,6 +341,18 @@ def save_order(user_id, cart, address, group_name):
         total_sum = sum(item["price"] * item["quantity"] for item in cart)
         total_bonus = sum(item["price"] * item["quantity"] * (item["bonus_percent"] / 100) for item in cart) if user_data["role"] == "Usta" else 0
         cart_text = "\n".join([f"{item['name']} - {item['quantity']} dona, narxi: {format_currency(item['price'])}, jami: {format_currency(item['price'] * item['quantity'])}" for item in cart])
+        
+        # Qatorlar sonini tekshirish va arxivlash
+        max_qatorlar = 900
+        joriy_qator_soni = BUYURTMALAR_SHEET.row_count
+        if joriy_qator_soni >= max_qatorlar:
+            arxivlanadigan_qatorlar = joriy_qator_soni - max_qatorlar + 1
+            all_values = BUYURTMALAR_SHEET.get_all_values()
+            headers = all_values[0]
+            ko‘chiriladigan_qatorlar = all_values[1:arxivlanadigan_qatorlar + 1]
+            BUYURTMALAR_ARCHIVE_SHEET.append_rows(ko‘chiriladigan_qatorlar)
+            BUYURTMALAR_SHEET.delete_rows(2, arxivlanadigan_qatorlar)
+            logger.info(f"{arxivlanadigan_qatorlar} ta eski buyurtma Buyurtmalar_Archive varag‘iga ko‘chirildi")
         
         BUYURTMALAR_SHEET.append_row([
             str(user_id),
@@ -342,11 +364,18 @@ def save_order(user_id, cart, address, group_name):
             cart_text,
             total_sum,
             total_bonus,
-            "No"
+            confirmed
         ])
         order_id = BUYURTMALAR_SHEET.row_count
-        logger.info(f"Buyurtma saqlandi: ID={user_id}, Guruh={group_name}, Bonus={total_bonus}, Order ID={order_id}")
+        logger.info(f"Buyurtma saqlandi: ID={user_id}, Guruh={group_name}, Bonus={total_bonus}, Order ID={order_id}, Confirmed={confirmed}")
         return order_id
+    except gspread.exceptions.APIError as e:
+        if "exceeds grid limits" in str(e):
+            logger.error(f"Qatorlar chegarasi oshib ketdi: {e}")
+            return None
+        else:
+            logger.error(f"Buyurtma saqlash xatosi: {e}")
+            return None
     except Exception as e:
         logger.error(f"Buyurtma saqlash xatosi: {e}")
         return None
@@ -779,12 +808,11 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 logger.error(f"confirm_order: Buyurtma topilmadi: User ID={order_user_id}")
                 return
             order = ORDER_CACHE[order_user_id]
-            order_row = save_order(order["user_id"], order["cart"], order["address"], order["group_name"])
+            order_row = save_order(order["user_id"], order["cart"], order["address"], order["group_name"], confirmed="Yes")
             if order_row is None:
                 await query.message.reply_text("Xato: Buyurtma saqlanmadi!")
                 logger.error(f"confirm_order: Buyurtma saqlanmadi: User ID={order_user_id}")
                 return
-            BUYURTMALAR_SHEET.update_cell(order_row, 10, "Yes")
             if order["bonus_sum"] > 0:
                 update_bonus(order_user_id, order["bonus_sum"])
             user_data = get_user_data(order_user_id)
@@ -815,12 +843,6 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 logger.error(f"reject_order: Buyurtma topilmadi: User ID={order_user_id}")
                 return
             order = ORDER_CACHE[order_user_id]
-            order_row = save_order(order["user_id"], order["cart"], order["address"], order["group_name"])
-            if order_row is None:
-                await query.message.reply_text("Xato: Buyurtma saqlanmadi!")
-                logger.error(f"reject_order: Buyurtma saqlanmadi: User ID={order_user_id}")
-                return
-            BUYURTMALAR_SHEET.update_cell(order_row, 10, "Rejected")
             await context.bot.send_message(
                 chat_id=order_user_id,
                 text="Sizning buyurtmangiz rad etildi. Qo'shimcha ma'lumot uchun admin bilan bog'laning."

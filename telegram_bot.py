@@ -294,7 +294,7 @@ def get_products(group_name=None):
         headers = all_values[0]
         products = []
         for row in all_values[1:]:
-            if group_name is None or row[0].strip() == group_name.strip():
+            if group_name is None or (len(row) > 0 and row[0].strip() == group_name.strip()):
                 products.append({
                     "group_name": row[0] if len(row) > 0 else "",
                     "name": row[1] if len(row) > 1 else "",
@@ -342,7 +342,7 @@ def save_order(user_id, cart, address, group_name):
             cart_text,
             total_sum,
             total_bonus,
-            "No"
+            "Yes"  # Holatni dastlab "Yes" qilib saqlaymiz
         ])
         order_id = BUYURTMALAR_SHEET.row_count
         if total_bonus > 0:
@@ -786,6 +786,8 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 await query.message.reply_text("Xato: Buyurtma saqlanmadi!")
                 logger.error(f"confirm_order: Buyurtma saqlanmadi: User ID={order_user_id}")
                 return
+            # Buyurtma holatini "Yes" ga yangilash
+            BUYURTMALAR_SHEET.update_cell(order_row, 10, "Yes")
             user_data = get_user_data(order_user_id)
             if not user_data:
                 await query.message.reply_text("Xato: Foydalanuvchi topilmadi!")
@@ -814,6 +816,12 @@ async def handle_admin_callback(update: Update, context: ContextTypes.DEFAULT_TY
                 logger.error(f"reject_order: Buyurtma topilmadi: User ID={order_user_id}")
                 return
             order = ORDER_CACHE[order_user_id]
+            # Buyurtma holatini "Rejected" ga yangilash
+            all_values = BUYURTMALAR_SHEET.get_all_values()
+            for i, row in enumerate(all_values[1:], start=2):
+                if row[0] == order_user_id and row[6] == order["cart_text"]:
+                    BUYURTMALAR_SHEET.update_cell(i, 10, "Rejected")
+                    break
             await context.bot.send_message(
                 chat_id=order_user_id,
                 text="Sizning buyurtmangiz rad etildi. Qo'shimcha ma'lumot uchun admin bilan bog'laning."
@@ -1046,14 +1054,16 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"Admin {user_id} mahsulot ro'yxatini so'radi, lekin guruhlar yo'q")
                 return
             text = "Mahsulotlar ro'yxati:\n\n"
+            found_products = False
             for group in groups:
                 products = get_products(group)
                 if products:
+                    found_products = True
                     text += f"**{group}**:\n"
                     for p in products:
                         text += f"  • {p['name']}: {p['quantity']} dona, Narx: {format_currency(p['price'])}, Bonus: {p['bonus_percent']}%\n"
                     text += "\n"
-            if text == "Mahsulotlar ro'yxati:\n\n":
+            if not found_products:
                 await update.message.reply_text("Hozirda mahsulotlar mavjud emas.")
                 logger.info(f"Admin {user_id} mahsulot ro'yxatini so'radi, lekin mahsulotlar yo'q")
             else:
@@ -1242,9 +1252,9 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     await update.message.reply_text(
                         f"Yangi bonus foizi saqlandi: {bonus_percent}%\n"
                         f"Joriy miqdor: {state['current_quantity']} dona\n"
-                        f"Yangi miqdorni kiriting (yoki o'zgartirmaslik uchun joriy miqdorni qaytaring):"
+                        f"Yangi miqdor kiriting (yoki o'zgartirmaslik uchun joriy miqdorni qaytaring):"
                     )
-                    logger.info(f"Admin {user_id} yangi bonus foizi kiritdi: {bonus_percent}")
+                    logger.info(f"Admin {user_id} yangi bonus foizini kiritdi: {bonus_percent}")
                 except ValueError:
                     await update.message.reply_text("Iltimos, to'g'ri foiz kiriting (masalan, 12.5).")
                     logger.warning(f"Admin {user_id} noto'g'ri bonus foizi formati kiritdi: {text}")
@@ -1263,77 +1273,71 @@ async def handle_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         "quantity": quantity
                     }
                     if update_product(state["old_product_name"], state["old_group_name"], data):
-                        await update.message.reply_text(
-                            f"Mahsulot yangilandi:\n"
-                            f"Nom: {data['name']}\n"
-                            f"Guruh: {data['group_name']}\n"
-                            f"Narx: {format_currency(data['price'])}\n"
-                            f"Bonus foizi: {data['bonus_percent']}%\n"
-                            f"Miqdori: {data['quantity']} dona"
-                        )
+                        await update.message.reply_text(f"Mahsulot yangilandi: {data['name']} ({data['group_name']})")
                         logger.info(f"Admin {user_id} mahsulotni yangiladi: {data['name']} ({data['group_name']})")
                     else:
-                        await update.message.reply_text("Mahsulotni yangilashda xato yuz berdi.")
-                        logger.error(f"Admin {user_id} mahsulotni yangilashda xato: {data['name']} ({data['group_name']})")
+                        await update.message.reply_text("Mahsulot yangilashda xato yuz berdi.")
                     del USER_STATE[user_id]
                     del USER_SELECTED_GROUP[user_id]
                 except ValueError:
                     await update.message.reply_text("Iltimos, to'g'ri miqdor kiriting (masalan, 50).")
                     logger.warning(f"Admin {user_id} noto'g'ri miqdor formati kiritdi: {text}")
-
+        else:
+            await update.message.reply_text("Noma'lum buyruq. Iltimos, menyudan tanlang.")
+            logger.warning(f"Admin {user_id} noma'lum buyruq kiritdi: {text}")
+    except (TimedOut, NetworkError) as e:
+        logger.error(f"TimedOut in handle_admin: {e}")
+        await update.message.reply_text("Tarmoq xatosi yuz berdi, iltimos, keyinroq urinib ko'ring.")
     except Exception as e:
-        logger.error(f"Xato admin funksiyasida: {e}", exc_info=True)
+        logger.error(f"Unexpected error in handle_admin: {e}", exc_info=True)
         await update.message.reply_text("Xato yuz berdi, iltimos, keyinroq urinib ko'ring.")
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Xatolarni qayta ishlash"""
     try:
         logger.error(f"Update {update} caused error {context.error}", exc_info=True)
-        if update and hasattr(update, 'message') and update.message:
-            await update.message.reply_text("Xato yuz berdi, iltimos, keyinroq urinib ko'ring yoki admin bilan bog'laning.")
+        if update and (update.message or update.callback_query):
+            await (update.message or update.callback_query.message).reply_text(
+                "Xato yuz berdi, iltimos, keyinroq urinib ko'ring yoki admin bilan bog'laning."
+            )
     except Exception as e:
-        logger.error(f"Error in error_handler: {e}", exc_info=True)
+        logger.error(f"Error in error_handler: {e}")
 
-class HealthCheckHandler(BaseHTTPRequestHandler):
-    """Render platformasi uchun /health endpointi"""
-    def do_GET(self):
-        if self.path == "/health":
+def run_server():
+    """HTTP serverni ishga tushirish (Google Sheets uchun webhook)"""
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
             self.send_response(200)
-            self.send_header("Content-type", "text/plain")
             self.end_headers()
             self.wfile.write(b"OK")
-        else:
-            self.send_response(404)
-            self.end_headers()
-
-def run_health_check_server():
-    """Health check serverini ishga tushirish"""
-    server_address = ("", 8000)
-    httpd = HTTPServer(server_address, HealthCheckHandler)
-    logger.info("Starting health check server on port 8000...")
-    httpd.serve_forever()
+    try:
+        server = HTTPServer(("", 8080), Handler)
+        logger.info("Starting HTTP server on port 8080")
+        server.serve_forever()
+    except Exception as e:
+        logger.error(f"HTTP server error: {e}")
 
 def main():
     """Botni ishga tushirish"""
     try:
         init_sheets()
-        # HTTPXRequest sozlamalarini yangilash
-        request = HTTPXRequest(connection_pool_size=20)
+        request = HTTPXRequest(connection_pool_size=20, read_timeout=10.0, write_timeout=10.0, connect_timeout=10.0)
         application = Application.builder().token(BOT_TOKEN).request(request).build()
-
         application.add_handler(CommandHandler("start", start))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
         application.add_handler(MessageHandler(filters.LOCATION, handle_location))
+        application.add_handler(CallbackQueryHandler(handle_callback_query, pattern="^(group_|product_|confirm_cart)"))
         application.add_handler(CallbackQueryHandler(handle_admin_callback, pattern="^(confirm_order_|reject_order_|approve_bonus_|reject_bonus_|approve_edit_|reject_edit_|edit_product_|delete_product_|select_group_edit_|select_group_add_|delete_group_)"))
-        application.add_handler(CallbackQueryHandler(handle_callback_query))
         application.add_error_handler(error_handler)
-
-        threading.Thread(target=run_health_check_server, daemon=True).start()
-
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        threading.Thread(target=run_server, daemon=True).start()
+        logger.info("Bot started")
+        application.run_polling(allowed_updates=Update.ALL_TYPES, drop_pending_updates=True)
     except Conflict:
-        logger.error("Bot is already running elsewhere. Terminating.")
+        logger.error("Conflict error: Another instance of the bot is running")
+        print("Bot is already running. Please stop the other instance.")
     except Exception as e:
-        logger.error(f"Botni ishga tushirishda xato: {e}", exc_info=True)
+        logger.error(f"Error starting bot: {e}")
+        print(f"Error starting bot: {e}")
 
 if __name__ == "__main__":
     main()
